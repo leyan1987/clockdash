@@ -141,9 +141,18 @@ adb install -r dist/ClockDash-v1.0.apk
 
 依赖：JDK 17、Android SDK（platform 34 / build-tools 34）、Gradle 8.7。
 
-- **Windows 一键**：`build-apk.cmd` —— 因 AGP/aapt 不支持中文项目路径，脚本会把工程镜像到纯 ASCII 路径构建再把 APK 拷回 `dist\`（工具链布局可在脚本顶部改）
-- **Android Studio**：Open 打开 `android\` 目录 → Build APK(s)
-- **命令行**：`cd android && gradle assembleRelease`（Gradle 已配阿里云镜像，国内构建顺畅；release 包默认调试签名可直接安装）
+- **Windows 一键**：`build-apk.cmd` —— 因 AGP/aapt 不支持中文项目路径，脚本会把工程镜像到纯 ASCII 路径构建再把两个 APK 拷回 `dist\`（工具链布局可在脚本顶部改）
+- **Android Studio**：Open 打开 `android\` 目录 → 选择 flavor → Build APK(s)
+- **命令行**：`cd android && gradle assembleLegacyRelease assembleModernRelease`（Gradle 已配阿里云镜像；release 包默认调试签名可直接安装）
+
+### 双版本说明（productFlavors）
+
+| 版本 | 适用 | minSdk | targetSdk | 产物 |
+|---|---|---|---|---|
+| **legacy** | 老平板 / 电视 / 机顶盒 | 15（Android 4.0.3+） | 15 | `ClockDash-legacy.apk` |
+| **modern** | 64 位现代手机 / 平板 / 新电视盒 | 21（Android 5.0+） | 31 | `ClockDash-modern.apk` |
+
+modern 版含现代系统适配：通知渠道（8.0+）、PendingIntent 不可变标志（12.0+）、精确闹钟被收回时退化为近似闹钟、提醒走**全屏意图通知**（替代被系统禁止的后台拉起界面）、开机自启走全屏通知。注意：充电常亮所需的“修改系统设置”权限需在系统设置里手动授予；存储卡导入配置在分区存储设备上不可用（用扫码/手动输入代替）。功能两版一致，无需改动服务器。
 
 ### 测试
 
