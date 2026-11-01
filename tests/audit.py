@@ -22,7 +22,10 @@ for p in layout_files:
     lay_all += t
     ids_defined |= set(re.findall(r'@\+id/(\w+)', t))
 
+gradle_text = read(os.path.abspath(os.path.join(ROOT, "..", "..", "..", "app", "build.gradle")))
 strings = set(re.findall(r'<string name="(\w+)"', read(ROOT + "/res/values/strings.xml")))
+# resValue "string", "name", ...（productFlavors 动态生成的资源也算）
+strings |= set(re.findall(r'resValue\s+"string",\s*"(\w+)"', gradle_text))
 colors = set(re.findall(r'<color name="(\w+)"', read(ROOT + "/res/values/colors.xml")))
 styles = set(re.findall(r'<style name="(\w+)"', read(ROOT + "/res/values/styles.xml")))
 mani = read(ROOT + "/AndroidManifest.xml")

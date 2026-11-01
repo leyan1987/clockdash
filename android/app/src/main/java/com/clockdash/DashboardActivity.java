@@ -1,10 +1,18 @@
 package com.clockdash;
 
 import android.app.Activity;
+import android.app.AlarmManager;
+import android.app.AlertDialog;
+import android.app.NotificationManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.provider.Settings;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.util.Log;
@@ -74,6 +82,8 @@ public class DashboardActivity extends Activity {
     private long mLastCornerTap = 0;
     private boolean mSyncing = false;
     private String mVersion = "";
+    /** 运行时权限引导：一次启动只走一遍完整检查 */
+    private boolean mPermPassDone = false;
     /** 最近一次待办列表重排的时间（诊断用，显示在状态栏） */
     private String mListBuiltAt = "";
 
@@ -206,6 +216,89 @@ public class DashboardActivity extends Activity {
         }
     }
 
+    /** 依次检查并引导运行时/特殊权限（现代 Android；老系统全部跳过） */
+    private void runPermissionPass() {
+        if (mPermPassDone) return;
+        // 1) 通知权限（Android 13+）：提醒可见性
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                        != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 100);
+            return; // 等授权回调后继续下一项
+        }
+        // 2) 精确闹钟（Android 12+）：被用户收回时引导去系统设置
+        if (Build.VERSION.SDK_INT >= 31) {
+            AlarmManager am = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
+            if (am != null && !am.canScheduleExactAlarms()) {
+                mPermPassDone = true;
+                new AlertDialog.Builder(this)
+                        .setTitle("需要“闹钟和提醒”权限")
+                        .setMessage("待办的准时提醒依赖精确闹钟。请点击“去设置”，"
+                                + "在本应用的“闹钟和提醒”页面选择“允许”。")
+                        .setPositiveButton("去设置", new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int w) {
+                                startActivity(new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                                        Uri.fromParts("package", getPackageName(), null)));
+                            }
+                        })
+                        .setNegativeButton("暂不", null)
+                        .show();
+                return;
+            }
+        }
+        // 3) 全屏意图（Android 14+）：被收回时提醒只能以普通通知出现
+        if (Build.VERSION.SDK_INT >= 34) {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null && !nm.canUseFullScreenIntent()) {
+                mPermPassDone = true;
+                new AlertDialog.Builder(this)
+                        .setTitle("需要“全屏意图”权限")
+                        .setMessage("到点提醒需要全屏弹出。请点击“去设置”，"
+                                + "在本应用的通知设置里允许“全屏意图”。")
+                        .setPositiveButton("去设置", new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int w) {
+                                startActivity(new Intent(
+                                        Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                        Uri.fromParts("package", getPackageName(), null)));
+                            }
+                        })
+                        .setNegativeButton("暂不", null)
+                        .show();
+                return;
+            }
+        }
+        // 4) 修改系统设置（Android 6+）：充电常亮的系统级兜底
+        if (Build.VERSION.SDK_INT >= 23 && Prefs.getBool(this, Prefs.K_STAY_ON, true)
+                && !Settings.System.canWrite(this)) {
+            mPermPassDone = true;
+            new AlertDialog.Builder(this)
+                    .setTitle("需要“修改系统设置”权限")
+                    .setMessage("“充电时屏幕永不休眠”依赖该权限。请点击“去设置”并允许。")
+                    .setPositiveButton("去设置", new android.content.DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(android.content.DialogInterface d, int w) {
+                            startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                                    Uri.fromParts("package", getPackageName(), null)));
+                        }
+                    })
+                    .setNegativeButton("暂不", null)
+                    .show();
+            return;
+        }
+        mPermPassDone = true;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 100) {
+            // 无论授予与否，继续剩余的权限检查
+            runPermissionPass();
+        }
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
@@ -214,6 +307,7 @@ public class DashboardActivity extends Activity {
         mHandler.post(mTick);
         syncNow();
         AlarmScheduler.schedulePeriodic(this);
+        runPermissionPass(); // 现代 Android 的运行时/特殊权限引导（每轮启动一次）
     }
 
     @Override

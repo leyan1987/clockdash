@@ -2,7 +2,9 @@ package com.clockdash;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.hardware.Camera;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.view.SurfaceHolder;
@@ -21,6 +23,7 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback {
     private int mWidth = 640, mHeight = 480;
     private volatile boolean mBusy = false;
     private boolean mDone = false;
+    private boolean mWaitingPerm = false;
     private final Handler mHandler = new Handler();
     private TextView mHint;
 
@@ -76,6 +79,29 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback {
         mHolder = sv.getHolder();
         mHolder.addCallback(this);
         mHolder.setType(SurfaceHolder.SURFACE_TYPE_PUSH_BUFFERS);
+
+        // Android 6+ 相机运行时权限：未授权时先弹系统授权框
+        if (Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission("android.permission.CAMERA")
+                        != PackageManager.PERMISSION_GRANTED) {
+            mWaitingPerm = true;
+            requestPermissions(new String[]{"android.permission.CAMERA"}, 200);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == 200) {
+            mWaitingPerm = false;
+            if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) {
+                if (mHolder.getSurface() != null && mHolder.getSurface().isValid()) {
+                    startCamera();
+                }
+            } else {
+                mHint.setText("未授予相机权限\n请返回上一页手动输入服务器地址");
+            }
+        }
     }
 
     private void requestFrame() {
@@ -93,6 +119,7 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void startCamera() {
+        if (mWaitingPerm) return; // 等待权限授权结果
         try {
             Camera.CameraInfo info = new Camera.CameraInfo();
             int pick = -1;
