@@ -53,15 +53,18 @@
 <body>
 
 <div id="noauth" hidden>
-  <h2>时钟看板 · 后台设置</h2>
-  <p style="color:var(--muted)">请输入设置口令（平板设置页二维码里包含口令，或见服务器启动提示 / data/server-token.txt）</p>
-  <input id="tkInput" placeholder="口令" style="text-align:center">
-  <div class="btnrow"><button class="primary" id="tkGo">进入</button></div>
+  <h2>时钟看板 · 后台登录</h2>
+  <p style="color:var(--muted)">初始账号 admin，口令为设备口令（服务器 data/server-token.txt）</p>
+  <label>用户名</label><input id="liUser" placeholder="admin" autocomplete="username">
+  <label>口令</label><input id="liPass" type="password" autocomplete="current-password">
+  <div class="btnrow"><button class="primary" id="liGo">登 录</button></div>
+  <div class="err" id="liErr" style="margin-top:10px"></div>
 </div>
 
 <main id="app" hidden>
   <header style="margin:-14px -12px 14px; border-radius:0">
-    <span>时钟看板 · 后台设置</span><span class="conn" id="conn"></span>
+    <span>时钟看板 · 后台设置</span>
+    <span class="conn"><span id="who"></span> <button class="mini" id="btnLogout" hidden>退出登录</button> <span id="conn"></span></span>
   </header>
 
   <!-- ============ 待办管理 ============ -->
@@ -169,6 +172,20 @@
     <div class="hint">服务器地址：<b id="manualUrl"></b></div>
     <div class="hint">口令：<b id="manualToken"></b></div>
   </section>
+
+  <!-- ============ 用户管理（仅管理员） ============ -->
+  <section id="secUsers" hidden>
+    <h2>用户管理 <small>多用户登录网页后台</small></h2>
+    <div id="userList"></div>
+    <label>用户名（2-32 位字母数字下划线）</label><input id="nuName" placeholder="例如：father">
+    <label>口令（至少 6 位）</label><input id="nuPass" type="password" placeholder="新口令">
+    <div class="btnrow">
+      <button id="btnUserAdd">＋ 添加用户</button>
+      <button id="btnUserPass">修改口令</button>
+      <button id="btnUserDel">删除用户</button>
+    </div>
+    <div class="hint">所有用户管理同一份待办（平板只显示一份）。admin 为内置管理员，不可删除。</div>
+  </section>
 </main>
 
 <div id="toast"></div>
@@ -176,7 +193,7 @@
 <script>
 (function () {
   var qs = new URLSearchParams(location.search);
-  var token = qs.get("token") || localStorage.getItem("cd_token") || "";
+  var auth = { mode: "", value: "", user: "", role: "" };
   var todos = [], dirty = false, editing = false, geo = { lat: null, lon: null };
   var WD = ["日", "一", "二", "三", "四", "五", "六"];
 
@@ -190,9 +207,15 @@
   }
   function api(path, method, body) {
     var opt = { method: method || "GET", headers: { "Content-Type": "application/json" } };
+    var url = path;
+    if (auth.mode === "token") {
+      var sep = path.indexOf("?") >= 0 ? "&" : "?";
+      url += sep + "token=" + encodeURIComponent(auth.value);
+    } else if (auth.mode === "session") {
+      opt.headers["X-Session"] = auth.value;
+    }
     if (body) opt.body = JSON.stringify(body);
-    var sep = path.indexOf("?") >= 0 ? "&" : "?";
-    return fetch(path + sep + "token=" + encodeURIComponent(token), opt)
+    return fetch(url, opt)
       .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); });
   }
 
@@ -398,12 +421,17 @@
       .catch(function (e) { toast("推送失败：" + e.message, 3500); });
   });
 
-  /* ---------- 启动 ---------- */
-  function boot() {
+  /* ---------- 启动 / 登录 / 用户管理 ---------- */
+  function start() {
     $("noauth").hidden = true; $("app").hidden = false;
-    localStorage.setItem("cd_token", token);
+    $("who").textContent = auth.mode === "session"
+      ? auth.user + (auth.role === "admin" ? " · 管理员" : " · 用户")
+      : "设备口令模式";
+    $("btnLogout").hidden = false;
+    $("secUsers").hidden = auth.role !== "admin";
     $("manualUrl").textContent = location.origin;
-    $("manualToken").textContent = token;
+    $("manualToken").textContent = auth.mode === "token"
+      ? auth.value : "（见服务器 data/server-token.txt）";
     api("/api/ping").then(function () { $("conn").innerHTML = '<span class="ok">已连接</span>'; })
       .catch(function (e) { $("conn").innerHTML = '<span class="err">连接失败：' + esc(e.message) + "</span>"; });
     api("/api/todos").then(function (j) { todos = j.todos || []; renderTodos(); })
@@ -418,15 +446,109 @@
       adcode = c.adcode || ""; setHintAdcode(adcode ? adcode + " ✓" : "");
       if (c.lat && c.lon) { geo.lat = c.lat; geo.lon = c.lon; setHintGeo(c.lat, c.lon); }
     }).catch(function () {});
+    if (auth.role === "admin") renderUsers();
   }
-  if (token) { boot(); }
-  else {
-    $("noauth").hidden = false;
-    $("tkGo").addEventListener("click", function () {
-      token = $("tkInput").value.trim();
-      if (token) { boot(); } else toast("请输入口令");
-    });
+  function showLogin() {
+    $("noauth").hidden = false; $("app").hidden = true;
   }
+  function init() {
+    var urlTok = qs.get("token");
+    if (urlTok) {
+      auth = { mode: "token", value: urlTok, role: "admin" };
+      localStorage.setItem("cd_token", urlTok);
+      start(); return;
+    }
+    var sess = localStorage.getItem("cd_session");
+    if (sess && localStorage.getItem("cd_user")) {
+      auth = { mode: "session", value: sess,
+               user: localStorage.getItem("cd_user"),
+               role: localStorage.getItem("cd_role") || "user" };
+      start(); return;
+    }
+    var savedTok = localStorage.getItem("cd_token");
+    if (savedTok) {
+      auth = { mode: "token", value: savedTok, role: "admin" };
+      start(); return;
+    }
+    showLogin();
+  }
+  $("liGo").addEventListener("click", function () {
+    var u = $("liUser").value.trim(), p = $("liPass").value;
+    if (!u || !p) { $("liErr").textContent = "请输入用户名和口令"; return; }
+    $("liErr").textContent = "";
+    fetch("/api/login", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u, password: p }) })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); })
+      .then(function (j) {
+        auth = { mode: "session", value: j.session, user: j.username, role: j.role };
+        localStorage.setItem("cd_session", j.session);
+        localStorage.setItem("cd_user", j.username);
+        localStorage.setItem("cd_role", j.role);
+        start();
+      })
+      .catch(function (e) { $("liErr").textContent = "登录失败：" + e.message; });
+  });
+  $("liPass").addEventListener("keydown", function (e) { if (e.key === "Enter") $("liGo").click(); });
+  $("btnLogout").addEventListener("click", function () {
+    if (auth.mode === "session") {
+      try { api("/api/logout", "POST", {}); } catch (e) {}
+      localStorage.removeItem("cd_session");
+      localStorage.removeItem("cd_user");
+      localStorage.removeItem("cd_role");
+    } else {
+      localStorage.removeItem("cd_token");
+    }
+    location.reload();
+  });
+
+  function renderUsers() {
+    api("/api/users").then(function (j) {
+      var html = "";
+      for (var i = 0; i < j.users.length; i++) {
+        var u = j.users[i];
+        html += '<div class="todo"><div class="t-main"><div class="t-title">' + esc(u.username)
+          + (u.role === "admin" ? ' <span class="hint">管理员</span>' : ' <span class="hint">用户</span>')
+          + '</div></div><div class="t-ops"><button class="mini" data-u="' + esc(u.username) + '" data-a="pass">改密</button>'
+          + (u.username === "admin" ? "" : '<button class="mini" data-u="' + esc(u.username) + '" data-a="del">删除</button>')
+          + '</div></div>';
+      }
+      $("userList").innerHTML = html;
+    }).catch(function (e) { $("userList").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+  }
+  $("btnUserAdd").addEventListener("click", function () {
+    api("/api/users", "POST", { action: "add", username: $("nuName").value.trim(), password: $("nuPass").value })
+      .then(function () { toast("已添加 ✓"); renderUsers(); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("btnUserPass").addEventListener("click", function () {
+    api("/api/users", "POST", { action: "passwd", username: $("nuName").value.trim(), password: $("nuPass").value })
+      .then(function () { toast("口令已修改 ✓，该用户旧会话已失效"); renderUsers(); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("btnUserDel").addEventListener("click", function () {
+    if (!confirm("删除用户 " + $("nuName").value.trim() + "？")) return;
+    api("/api/users", "POST", { action: "del", username: $("nuName").value.trim() })
+      .then(function () { toast("已删除 ✓"); renderUsers(); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("userList").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.a === "pass") {
+      var np = prompt("为 " + b.dataset.u + " 设置新口令（至少 6 位）：");
+      if (!np) return;
+      api("/api/users", "POST", { action: "passwd", username: b.dataset.u, password: np })
+        .then(function () { toast("口令已修改 ✓"); })
+        .catch(function (er) { toast(er.message, 3500); });
+    } else if (b.dataset.a === "del") {
+      if (!confirm("删除用户 " + b.dataset.u + "？")) return;
+      api("/api/users", "POST", { action: "del", username: b.dataset.u })
+        .then(function () { toast("已删除 ✓"); renderUsers(); })
+        .catch(function (er) { toast(er.message, 3500); });
+    }
+  });
+
+  init();
 })();
 </script>
 </body>

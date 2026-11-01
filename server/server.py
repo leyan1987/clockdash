@@ -4,20 +4,30 @@
 
 接口：
   GET  /             设置页（web/index.html）
-  GET  /api/ping     连通性测试（需口令）
-  GET  /api/todos    读取待办规则（需口令）
-  POST /api/todos    保存待办规则（需口令）
-  GET  /api/config   读取推送配置（需口令）
-  POST /api/config   保存推送配置，rev 自动 +1（需口令）
-  GET  /api/weather  天气（服务器代理高德/Open-Meteo，带缓存，需口令）
-  GET  /api/holidays 法定节假日/调休（代理 holiday-cn，每日缓存，需口令）
-  GET  /api/check    数据版本号检查（轻量推送轮询，需口令）
+  POST /api/login    网页登录（用户名+口令 → 会话）
+  POST /api/logout   退出登录
+  GET  /api/users    用户列表（仅管理员）
+  POST /api/users    用户管理：add/passwd/del（仅管理员）
+  GET  /api/ping     连通性测试（需口令/会话）
+  GET  /api/todos    读取待办规则（需口令/会话）
+  POST /api/todos    保存待办规则（需口令/会话）
+  GET  /api/config   读取推送配置（需口令/会话；高德Key仅管理员 full=1）
+  POST /api/config   保存推送配置，rev 自动 +1（需口令/会话）
+  GET  /api/weather  天气（服务器代理高德/Open-Meteo，带缓存，需口令/会话）
+  GET  /api/holidays 法定节假日/调休（代理 holiday-cn，每日缓存，需口令/会话）
+  GET  /api/check    数据版本号检查（轻量推送轮询，需口令/会话）
+
+鉴权两通道：
+  设备口令 token（平板/链接直达，权限等同管理员）
+  网页会话 X-Session（/api/login 签发，30 天有效）
+用户库 data/users.json（PBKDF2 加盐哈希）；初始用户 admin 口令 = 设备口令
 
 用法：
   python server.py [端口]        默认端口 8765
 口令：
   首次运行自动生成 data/server-token.txt，启动时打印带口令的设置页地址。
 """
+import hashlib
 import hmac
 import json
 import os
@@ -39,6 +49,11 @@ TODOS_FILE = os.path.join(DATA_DIR, "todos.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "app-config.json")
 HOLIDAY_CACHE_FILE = os.path.join(DATA_DIR, "holiday-cache.json")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")
+SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
+
+SESSION_TTL = 30 * 86400   # 网页登录会话有效期 30 天
+_PBKDF2_ITER = 100000      # 口令哈希迭代次数
 
 REPEATS = ("none", "hourly", "daily", "weekly", "monthly", "yearly")
 
@@ -51,6 +66,10 @@ def ensure_data():
         # 16 位 hex（64bit）；老版本是 8 位，如需升级强度删除该文件重启即可
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             f.write(secrets.token_hex(8).upper())
+    if not os.path.exists(USERS_FILE):
+        # 初始用户：admin 的口令绑定为当前设备口令
+        u = hash_password(read_token())
+        save_users({"users": [{"username": "admin", "role": "admin", **u}]})
     if not os.path.exists(STATE_FILE):
         atomic_write(STATE_FILE, json.dumps({"todo_rev": 0}))
     if not os.path.exists(TODOS_FILE):
@@ -92,6 +111,75 @@ def ensure_data():
 def read_token():
     with open(TOKEN_FILE, "r", encoding="utf-8") as f:
         return f.read().strip()
+
+
+# ---------- 用户库与会话（网页后台登录） ----------
+
+def hash_password(password, salt=None):
+    if salt is None:
+        salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
+                            bytes.fromhex(salt), _PBKDF2_ITER)
+    return {"salt": salt, "hash": h.hex(), "iterations": _PBKDF2_ITER}
+
+
+def verify_password(user, password):
+    try:
+        salt = bytes.fromhex(user.get("salt", ""))
+        h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
+                                salt, int(user.get("iterations", _PBKDF2_ITER)))
+        return hmac.compare_digest(h.hex(), user.get("hash", ""))
+    except Exception:
+        return False
+
+
+def load_users():
+    d = load_json(USERS_FILE, {"users": []})
+    return d if isinstance(d, dict) and isinstance(d.get("users"), list) else {"users": []}
+
+
+def save_users(users):
+    atomic_write(USERS_FILE, json.dumps(users, ensure_ascii=False, indent=2))
+
+
+def load_sessions():
+    d = load_json(SESSIONS_FILE, {"sessions": {}})
+    now = time.time()
+    out = {}
+    if isinstance(d, dict):
+        for sid, s in (d.get("sessions") or {}).items():
+            if isinstance(s, dict) and now - float(s.get("ts", 0)) < SESSION_TTL:
+                out[sid] = s
+    return out
+
+
+def save_sessions(sessions):
+    atomic_write(SESSIONS_FILE, json.dumps({"sessions": sessions}))
+
+
+def create_session(username, role):
+    with _SAVE_LOCK:
+        sessions = load_sessions()
+        sid = secrets.token_hex(32)
+        sessions[sid] = {"user": username, "role": role, "ts": time.time()}
+        save_sessions(sessions)
+    return sid
+
+
+def drop_session(sid):
+    with _SAVE_LOCK:
+        sessions = load_sessions()
+        if sid in sessions:
+            del sessions[sid]
+            save_sessions(sessions)
+
+
+def drop_user_sessions(username):
+    with _SAVE_LOCK:
+        sessions = load_sessions()
+        remain = {k: v for k, v in sessions.items() if v.get("user") != username}
+        if len(remain) != len(sessions):
+            save_sessions(remain)
 
 
 def load_json(path, default):
@@ -345,15 +433,84 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         SimpleHTTPRequestHandler.__init__(self, *args, directory=WEB_DIR, **kwargs)
 
-    # ---------- 工具 ----------
-    def _check(self):
+    # ---------- 鉴权：设备口令或网页会话，返回 {"role": ...} 或 None ----------
+    def _auth(self):
         qs = parse_qs(urlparse(self.path).query)
         tok = (qs.get("token") or [""])[0] or self.headers.get("X-Token", "")
-        ok = bool(tok) and hmac.compare_digest(tok, read_token())
-        if not ok:
-            # 拖慢在线爆破；线程池服务下只拖慢攻击者自己
+        if tok:
+            if hmac.compare_digest(tok, read_token()):
+                return {"mode": "token", "role": "admin", "user": "device"}
             time.sleep(random.uniform(0.2, 0.5))
-        return ok
+            return None
+        sid = self.headers.get("X-Session", "")
+        if sid:
+            s = load_sessions().get(sid)
+            if s:
+                return {"mode": "session", "role": s.get("role", "user"),
+                        "user": s.get("user", ""), "sid": sid}
+            time.sleep(random.uniform(0.2, 0.4))
+        return None
+
+    def _handle_login(self, doc):
+        username = str(doc.get("username", "")).strip()
+        password = str(doc.get("password", ""))
+        u = None
+        for x in load_users()["users"]:
+            if x.get("username") == username:
+                u = x
+                break
+        if u is None or not verify_password(u, password):
+            time.sleep(random.uniform(0.3, 0.8))
+            return self._send_json({"error": "用户名或口令错误"}, 401)
+        role = u.get("role", "user")
+        sid = create_session(username, role)
+        return self._send_json({"ok": True, "session": sid,
+                                "role": role, "username": username})
+
+    def _handle_users(self, doc):
+        act = str(doc.get("action", ""))
+        username = str(doc.get("username", "")).strip()
+        password = str(doc.get("password", ""))
+        if act == "list":
+            return self._send_json({"ok": True,
+                                    "users": [{"username": u.get("username"),
+                                               "role": u.get("role", "user")}
+                                              for u in load_users()["users"]]})
+        if not re.fullmatch(r"[A-Za-z0-9_]{2,32}", username):
+            return self._send_json({"error": "用户名需为 2-32 位字母数字下划线"}, 400)
+        users = load_users()
+        idx = next((i for i, u in enumerate(users["users"])
+                    if u.get("username") == username), -1)
+        if act == "add":
+            if idx >= 0:
+                return self._send_json({"error": "用户已存在"}, 400)
+            if len(password) < 6:
+                return self._send_json({"error": "口令至少 6 位"}, 400)
+            role = doc.get("role") if doc.get("role") in ("admin", "user") else "user"
+            u = hash_password(password)
+            users["users"].append({"username": username, "role": role, **u})
+        elif act == "passwd":
+            if idx < 0:
+                return self._send_json({"error": "用户不存在"}, 404)
+            if len(password) < 6:
+                return self._send_json({"error": "口令至少 6 位"}, 400)
+            users["users"][idx].update(hash_password(password))
+            drop_user_sessions(username)  # 改密后踢掉旧会话
+        elif act == "del":
+            if idx < 0:
+                return self._send_json({"error": "用户不存在"}, 404)
+            if username == "admin":
+                return self._send_json({"error": "不能删除内置管理员"}, 400)
+            target = users["users"][idx]
+            admins = sum(1 for x in users["users"] if x.get("role") == "admin")
+            if target.get("role") == "admin" and admins <= 1:
+                return self._send_json({"error": "不能删除最后一个管理员"}, 400)
+            del users["users"][idx]
+            drop_user_sessions(username)
+        else:
+            return self._send_json({"error": "未知操作"}, 400)
+        save_users(users)
+        return self._send_json({"ok": True})
 
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -368,15 +525,25 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         p = urlparse(self.path).path
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
-                 "/api/holidays", "/api/check"):
-            if not self._check():
-                return self._send_json({"error": "口令错误"}, 401)
+                 "/api/holidays", "/api/check", "/api/users"):
+            a = self._auth()
+            if a is None:
+                return self._send_json({"error": "未登录"}, 401)
+            if p == "/api/users":
+                if a.get("role") != "admin":
+                    return self._send_json({"error": "需要管理员权限"}, 403)
+                return self._send_json({"ok": True,
+                                        "users": [{"username": u.get("username"),
+                                                   "role": u.get("role", "user")}
+                                                  for u in load_users()["users"]]})
             if p == "/api/todos":
                 return self._send_json(load_json(TODOS_FILE, {"version": 1, "todos": []}))
             if p == "/api/config":
                 cfg = load_json(CONFIG_FILE, {})
-                # 平板不需要高德 Key，默认剥离；网页后台带 full=1 才返回
+                # 平板不需要高德 Key，默认剥离；管理员带 full=1 才返回
                 qs = parse_qs(urlparse(self.path).query)
+                if (qs.get("full") or [""])[0] == "1" and a.get("role") != "admin":
+                    return self._send_json({"error": "需要管理员权限"}, 403)
                 if (qs.get("full") or [""])[0] != "1":
                     cfg = dict(cfg)
                     cfg.pop("amap_key", None)
@@ -397,15 +564,27 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         p = urlparse(self.path).path
-        if p not in ("/api/todos", "/api/config"):
+        if p not in ("/api/todos", "/api/config", "/api/login", "/api/logout", "/api/users"):
             return self.send_error(404)
-        if not self._check():
-            return self._send_json({"error": "口令错误"}, 401)
+        a = self._auth()
+        if p in ("/api/todos", "/api/config", "/api/users") and a is None:
+            return self._send_json({"error": "未登录"}, 401)
+        if p == "/api/users" and a.get("role") != "admin":
+            return self._send_json({"error": "需要管理员权限"}, 403)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
             if n > 1024 * 1024:
                 return self._send_json({"error": "请求体过大"}, 413)
-            doc = json.loads(self.rfile.read(n).decode("utf-8"))
+            doc = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            if p == "/api/login":
+                return self._handle_login(doc)
+            if p == "/api/logout":
+                sid = self.headers.get("X-Session", "")
+                if sid:
+                    drop_session(sid)
+                return self._send_json({"ok": True})
+            if p == "/api/users":
+                return self._handle_users(doc)
             if p == "/api/todos":
                 out = validate_todos(doc)
                 with _SAVE_LOCK:
