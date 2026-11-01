@@ -57,6 +57,15 @@
             android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
             android:text="开启后会修改系统设置“充电时保持唤醒”。注意：老电池长期满电插电可能鼓包，条件允许可拆掉电池直接用电源供电。" />
 
+        <TextView style="@style/SecTitle" android:text="开机自启" />
+        <CheckBox
+            android:id="@+id/cbAutoBoot" style="@style/Cb"
+            android:text="开机后自动打开看板（推荐开启）" />
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
+            android:text="断电重启后无需任何操作，几秒后自动回到时钟看板。" />
+
         <Button
             android:id="@+id/btnBack"
             android:layout_width="match_parent" android:layout_height="52dp"

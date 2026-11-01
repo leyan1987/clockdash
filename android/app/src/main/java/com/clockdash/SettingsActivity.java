@@ -26,7 +26,7 @@ public class SettingsActivity extends Activity {
     private static final int REQ_SCAN = 1;
 
     private EditText etUrl, etToken, etCity, etLat, etLon, etNightStart, etNightEnd, etTodoMin, etWxMin;
-    private CheckBox cbNightOnly, cbSound, cbStayOn;
+    private CheckBox cbNightOnly, cbSound, cbStayOn, cbAutoBoot;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -45,6 +45,7 @@ public class SettingsActivity extends Activity {
         cbNightOnly = (CheckBox) findViewById(R.id.cbNightOnly);
         cbSound = (CheckBox) findViewById(R.id.cbSound);
         cbStayOn = (CheckBox) findViewById(R.id.cbStayOn);
+        cbAutoBoot = (CheckBox) findViewById(R.id.cbAutoBoot);
 
         etUrl.setText(Prefs.get(this, Prefs.K_URL, ""));
         etToken.setText(Prefs.get(this, Prefs.K_TOKEN, ""));
@@ -58,6 +59,7 @@ public class SettingsActivity extends Activity {
         cbNightOnly.setChecked(Prefs.getBool(this, Prefs.K_NIGHT_ONLY, false));
         cbSound.setChecked(Prefs.getBool(this, Prefs.K_SOUND, true));
         cbStayOn.setChecked(Prefs.getBool(this, Prefs.K_STAY_ON, true));
+        cbAutoBoot.setChecked(Prefs.getBool(this, Prefs.K_AUTO_BOOT, true));
 
         findViewById(R.id.btnTest).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -136,6 +138,7 @@ public class SettingsActivity extends Activity {
         Prefs.putBool(this, Prefs.K_NIGHT_ONLY, cbNightOnly.isChecked());
         Prefs.putBool(this, Prefs.K_SOUND, cbSound.isChecked());
         Prefs.putBool(this, Prefs.K_STAY_ON, cbStayOn.isChecked());
+        Prefs.putBool(this, Prefs.K_AUTO_BOOT, cbAutoBoot.isChecked());
         Prefs.applyStayOn(this, cbStayOn.isChecked());
         AlarmScheduler.schedulePeriodic(this);
     }
