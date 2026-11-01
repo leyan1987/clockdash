@@ -18,8 +18,11 @@
 口令：
   首次运行自动生成 data/server-token.txt，启动时打印带口令的设置页地址。
 """
+import hmac
 import json
 import os
+import random
+import re
 import secrets
 import sys
 import threading
@@ -39,12 +42,15 @@ STATE_FILE = os.path.join(DATA_DIR, "state.json")
 
 REPEATS = ("none", "hourly", "daily", "weekly", "monthly", "yearly")
 
+_SAVE_LOCK = threading.Lock()  # 保护 todo_rev 的读改写与文件原子写
+
 
 def ensure_data():
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(TOKEN_FILE):
+        # 16 位 hex（64bit）；老版本是 8 位，如需升级强度删除该文件重启即可
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-            f.write(secrets.token_hex(4).upper())
+            f.write(secrets.token_hex(8).upper())
     if not os.path.exists(STATE_FILE):
         atomic_write(STATE_FILE, json.dumps({"todo_rev": 0}))
     if not os.path.exists(TODOS_FILE):
@@ -125,10 +131,10 @@ def validate_todos(doc):
         rep = t.get("repeat", "none")
         if rep not in REPEATS:
             raise ValueError("第 %d 条 repeat 取值不合法" % (i + 1))
-        item = {"id": str(t.get("id") or ("t%d" % (i + 1))),
-                "title": str(t["title"]).strip(),
+        item = {"id": str(t.get("id") or ("t%d" % (i + 1)))[:64],
+                "title": str(t["title"]).strip()[:200],
                 "date": t["date"], "time": t["time"],
-                "remind": int(t.get("remind", 0) or 0),
+                "remind": max(-1, min(int(t.get("remind", 0) or 0), 525600)),
                 "repeat": rep}
         if rep != "none":
             item["interval"] = max(1, int(t.get("interval", 1) or 1))
@@ -257,7 +263,17 @@ def get_weather():
     result = None
     key = str(cfg.get("amap_key") or "").strip()
     adcode = str(cfg.get("adcode") or "").strip()
+    # 白名单校验，防止拼 URL 时被注入额外参数
     if key and adcode:
+        if not re.fullmatch(r"[A-Za-z0-9]+", key):
+            result = {"ok": False, "error": "高德Key格式不合法"}
+        elif not re.fullmatch(r"\d{6}", adcode):
+            result = {"ok": False, "error": "行政区划代码应为 6 位数字"}
+        else:
+            try:
+                result = _fetch_amap(key, adcode)
+            except Exception as e:
+                result = {"ok": False, "error": "高德: %s" % e}
         try:
             result = _fetch_amap(key, adcode)
         except Exception as e:
@@ -333,7 +349,11 @@ class Handler(SimpleHTTPRequestHandler):
     def _check(self):
         qs = parse_qs(urlparse(self.path).query)
         tok = (qs.get("token") or [""])[0] or self.headers.get("X-Token", "")
-        return tok and tok == read_token()
+        ok = bool(tok) and hmac.compare_digest(tok, read_token())
+        if not ok:
+            # 拖慢在线爆破；线程池服务下只拖慢攻击者自己
+            time.sleep(random.uniform(0.2, 0.5))
+        return ok
 
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -354,7 +374,13 @@ class Handler(SimpleHTTPRequestHandler):
             if p == "/api/todos":
                 return self._send_json(load_json(TODOS_FILE, {"version": 1, "todos": []}))
             if p == "/api/config":
-                return self._send_json(load_json(CONFIG_FILE, {}))
+                cfg = load_json(CONFIG_FILE, {})
+                # 平板不需要高德 Key，默认剥离；网页后台带 full=1 才返回
+                qs = parse_qs(urlparse(self.path).query)
+                if (qs.get("full") or [""])[0] != "1":
+                    cfg = dict(cfg)
+                    cfg.pop("amap_key", None)
+                return self._send_json(cfg)
             if p == "/api/weather":
                 return self._send_json(get_weather())
             if p == "/api/holidays":
@@ -377,13 +403,16 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json({"error": "口令错误"}, 401)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
+            if n > 1024 * 1024:
+                return self._send_json({"error": "请求体过大"}, 413)
             doc = json.loads(self.rfile.read(n).decode("utf-8"))
             if p == "/api/todos":
                 out = validate_todos(doc)
-                rev = get_todo_rev() + 1
-                out["rev"] = rev
-                atomic_write(STATE_FILE, json.dumps({"todo_rev": rev}))
-                atomic_write(TODOS_FILE, json.dumps(out, ensure_ascii=False, indent=2))
+                with _SAVE_LOCK:
+                    rev = get_todo_rev() + 1
+                    out["rev"] = rev
+                    atomic_write(STATE_FILE, json.dumps({"todo_rev": rev}))
+                    atomic_write(TODOS_FILE, json.dumps(out, ensure_ascii=False, indent=2))
                 return self._send_json({"ok": True, "rev": rev})
             cfg = load_json(CONFIG_FILE, {})
             for k in ("city", "lat", "lon", "night_start", "night_end",
@@ -405,7 +434,9 @@ class Handler(SimpleHTTPRequestHandler):
         SimpleHTTPRequestHandler.end_headers(self)
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("%s %s\n" % (self.address_string(), fmt % args))
+        # 只记路径，不记 query —— 避免口令出现在 URL 里被写进日志
+        sys.stderr.write("%s %s %s\n" % (self.address_string(), self.command,
+                                         urlparse(self.path).path))
 
 
 def main():

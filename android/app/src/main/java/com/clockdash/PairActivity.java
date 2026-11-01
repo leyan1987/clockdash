@@ -303,6 +303,11 @@ public class PairActivity extends Activity {
             Map<String, String> p = parseForm(body);
             if (!mPin.equals(p.get("pin"))) {
                 notifyEvent("手机提交了错误的配对码，已拒绝");
+                // 错误配对码加延迟，防止局域网设备爆破 4 位数字
+                try {
+                    Thread.sleep(800);
+                } catch (InterruptedException ignored) {
+                }
                 respond(s, msgHtml("配对码不正确，请核对平板上显示的 4 位数字。"));
                 return;
             }

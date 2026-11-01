@@ -191,7 +191,8 @@
   function api(path, method, body) {
     var opt = { method: method || "GET", headers: { "Content-Type": "application/json" } };
     if (body) opt.body = JSON.stringify(body);
-    return fetch(path + "?token=" + encodeURIComponent(token), opt)
+    var sep = path.indexOf("?") >= 0 ? "&" : "?";
+    return fetch(path + sep + "token=" + encodeURIComponent(token), opt)
       .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); });
   }
 
@@ -343,8 +344,8 @@
           var html = "";
           for (var i = 0; i < j.districts.length && i < 6; i++) {
             var d = j.districts[i];
-            html += '<button class="mini" style="margin:2px" data-adcode="' + d.adcode + '" data-name="' + esc(d.name) + '">'
-              + esc(d.name) + "（" + d.adcode + "）</button>";
+            html += '<button class="mini" style="margin:2px" data-adcode="' + esc(d.adcode) + '" data-name="' + esc(d.name) + '">'
+              + esc(d.name) + "（" + esc(d.adcode) + "）</button>";
           }
           $("geoList").innerHTML = html;
         })
@@ -407,7 +408,7 @@
       .catch(function (e) { $("conn").innerHTML = '<span class="err">连接失败：' + esc(e.message) + "</span>"; });
     api("/api/todos").then(function (j) { todos = j.todos || []; renderTodos(); })
       .catch(function (e) { toast("读取待办失败：" + e.message, 3500); });
-    api("/api/config").then(function (c) {
+    api("/api/config?full=1").then(function (c) {
       if (!c) return;
       $("pCity").value = c.city || ""; $("pNightStart").value = c.night_start || "22:30";
       $("pNightEnd").value = c.night_end || "06:30"; $("pNightOnly").checked = !!c.night_clock_only;
