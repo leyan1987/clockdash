@@ -51,13 +51,14 @@ HOLIDAY_CACHE_FILE = os.path.join(DATA_DIR, "holiday-cache.json")
 STATE_FILE = os.path.join(DATA_DIR, "state.json")
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
+DEVICES_FILE = os.path.join(DATA_DIR, "devices.json")
 
 SESSION_TTL = 30 * 86400   # 网页登录会话有效期 30 天
 _PBKDF2_ITER = 100000      # 口令哈希迭代次数
 
 REPEATS = ("none", "hourly", "daily", "weekly", "monthly", "yearly")
 
-_SAVE_LOCK = threading.Lock()  # 保护 todo_rev 的读改写与文件原子写
+_SAVE_LOCK = threading.RLock()  # 可重入：bump_todo_rev 会在外层持锁时被调用
 
 
 def ensure_data():
@@ -106,6 +107,19 @@ def ensure_data():
         if changed:
             atomic_write(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
             print("* 已将待办/天气刷新间隔调整为每小时（可通过设置页推送修改）")
+    if load_devices() is None:
+        # 多设备迁移：现有口令/待办/配置整体成为“默认平板”
+        devs = {"devices": [{"id": "default", "name": "默认平板", "token": read_token()}]}
+        atomic_write(DEVICES_FILE, json.dumps(devs, ensure_ascii=False, indent=2))
+        for kind, src in (("todos", TODOS_FILE), ("config", CONFIG_FILE)):
+            dst = os.path.join(DATA_DIR, "%s_default.json" % kind)
+            if os.path.exists(src) and not os.path.exists(dst):
+                try:
+                    with open(src, "r", encoding="utf-8") as f:
+                        atomic_write(dst, f.read())
+                except Exception:
+                    pass
+        print("* 已启用多设备：原平板迁移为默认设备（default）")
 
 
 def read_token():
@@ -182,6 +196,45 @@ def drop_user_sessions(username):
             save_sessions(remain)
 
 
+# ---------- 设备库（多平板：每台独立待办/配置/口令） ----------
+
+def load_devices():
+    d = load_json(DEVICES_FILE, None)
+    if isinstance(d, dict) and isinstance(d.get("devices"), list) and d["devices"]:
+        return d
+    return None
+
+
+def device_by_id(devid):
+    if not isinstance(devid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", devid):
+        return None
+    for d in load_devices()["devices"]:
+        if d.get("id") == devid:
+            return d
+    return None
+
+
+def device_by_token(tok):
+    for d in load_devices()["devices"]:
+        if hmac.compare_digest(str(d.get("token", "")), tok):
+            return d
+    # 兼容：旧全局口令视为默认设备
+    try:
+        if hmac.compare_digest(read_token(), tok):
+            return {"id": "default", "name": "默认平板", "token": tok}
+    except Exception:
+        pass
+    return None
+
+
+def todos_path(dev_id):
+    return os.path.join(DATA_DIR, "todos_%s.json" % dev_id)
+
+
+def config_path(dev_id):
+    return os.path.join(DATA_DIR, "config_%s.json" % dev_id)
+
+
 def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -197,12 +250,30 @@ def atomic_write(path, text):
     os.replace(tmp, path)
 
 
-def get_todo_rev():
-    st = load_json(STATE_FILE, {"todo_rev": 0})
+def get_todo_rev(dev_id):
+    st = load_json(STATE_FILE, {})
+    v = st.get("todo_rev", 0)
+    if isinstance(v, dict):
+        try:
+            return int(v.get(dev_id, 0))
+        except (TypeError, ValueError):
+            return 0
+    # 旧格式：全局整数视为默认设备的版本号
     try:
-        return int(st.get("todo_rev", 0))
+        return int(v) if dev_id == "default" else 0
     except (TypeError, ValueError):
         return 0
+
+
+def bump_todo_rev(dev_id):
+    with _SAVE_LOCK:
+        st = load_json(STATE_FILE, {})
+        v = st.get("todo_rev", 0)
+        if not isinstance(v, dict):
+            v = {"default": int(v) if isinstance(v, int) else 0}
+        v[dev_id] = int(v.get(dev_id, 0)) + 1
+        atomic_write(STATE_FILE, json.dumps({"todo_rev": v}))
+        return v[dev_id]
 
 
 def validate_todos(doc):
@@ -240,7 +311,7 @@ def validate_todos(doc):
 # ---------- 天气代理：高德优先，Open-Meteo 兜底 ----------
 
 WX_TTL = 600  # 缓存 10 分钟，个人 Key 免费配额足够
-_WX_CACHE = {"ts": 0.0, "data": None}
+_WX_CACHE = {}  # dev_id -> {"ts": ..., "data": ...}（每台设备各自位置）
 _WX_LOCK = threading.Lock()
 
 
@@ -341,13 +412,14 @@ def _fetch_openmeteo(lat, lon):
             "humidity": "", "wind": "", "casts": casts}
 
 
-def get_weather():
-    cfg = load_json(CONFIG_FILE, {})
+def get_weather(dev_id):
     now = time.time()
     with _WX_LOCK:
-        if _WX_CACHE["data"] and now - _WX_CACHE["ts"] < WX_TTL:
-            return _WX_CACHE["data"]
+        c = _WX_CACHE.get(dev_id)
+        if c and c.get("data") and now - c["ts"] < WX_TTL:
+            return c["data"]
 
+    cfg = load_json(config_path(dev_id), {})
     result = None
     key = str(cfg.get("amap_key") or "").strip()
     adcode = str(cfg.get("adcode") or "").strip()
@@ -362,10 +434,6 @@ def get_weather():
                 result = _fetch_amap(key, adcode)
             except Exception as e:
                 result = {"ok": False, "error": "高德: %s" % e}
-        try:
-            result = _fetch_amap(key, adcode)
-        except Exception as e:
-            result = {"ok": False, "error": "高德: %s" % e}
 
     if result is None or result.get("ok") is False:
         lat, lon = cfg.get("lat"), cfg.get("lon")
@@ -381,7 +449,7 @@ def get_weather():
 
     if result.get("ok"):
         with _WX_LOCK:
-            _WX_CACHE.update({"ts": now, "data": result})
+            _WX_CACHE[dev_id] = {"ts": now, "data": result}
     return result
 
 
@@ -438,8 +506,10 @@ class Handler(SimpleHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         tok = (qs.get("token") or [""])[0] or self.headers.get("X-Token", "")
         if tok:
-            if hmac.compare_digest(tok, read_token()):
-                return {"mode": "token", "role": "admin", "user": "device"}
+            dev = device_by_token(tok)
+            if dev:
+                return {"mode": "device", "role": "admin",
+                        "user": dev.get("name", "平板"), "dev": dev["id"]}
             time.sleep(random.uniform(0.2, 0.5))
             return None
         sid = self.headers.get("X-Session", "")
@@ -449,6 +519,16 @@ class Handler(SimpleHTTPRequestHandler):
                 return {"mode": "session", "role": s.get("role", "user"),
                         "user": s.get("user", ""), "sid": sid}
             time.sleep(random.uniform(0.2, 0.4))
+        return None
+
+    def _resolve_dev(self, a):
+        """确定请求针对的设备：设备口令自动解析；会话模式取 ?devid="""
+        if a.get("mode") == "device":
+            return a.get("dev")
+        qs = parse_qs(urlparse(self.path).query)
+        devid = (qs.get("devid") or [""])[0]
+        if device_by_id(devid):
+            return devid
         return None
 
     def _handle_login(self, doc):
@@ -525,7 +605,7 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         p = urlparse(self.path).path
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
-                 "/api/holidays", "/api/check", "/api/users"):
+                 "/api/holidays", "/api/check", "/api/users", "/api/devices"):
             a = self._auth()
             if a is None:
                 return self._send_json({"error": "未登录"}, 401)
@@ -536,10 +616,25 @@ class Handler(SimpleHTTPRequestHandler):
                                         "users": [{"username": u.get("username"),
                                                    "role": u.get("role", "user")}
                                                   for u in load_users()["users"]]})
+            if p == "/api/devices":
+                devs = load_devices()["devices"]
+                if a.get("role") != "admin":
+                    # 普通用户给名字即可（用于切换管理目标），口令仅管理员可见
+                    return self._send_json({"ok": True,
+                                            "devices": [{"id": d["id"], "name": d.get("name", "")}
+                                                        for d in devs]})
+                return self._send_json({"ok": True,
+                                        "devices": [{"id": d["id"], "name": d.get("name", ""),
+                                                     "token": d.get("token", "")} for d in devs]})
+            # 以下为设备级接口
+            if p not in ("/api/ping", "/api/holidays"):
+                dev = self._resolve_dev(a)
+                if dev is None:
+                    return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
             if p == "/api/todos":
-                return self._send_json(load_json(TODOS_FILE, {"version": 1, "todos": []}))
+                return self._send_json(load_json(todos_path(dev), {"version": 1, "todos": []}))
             if p == "/api/config":
-                cfg = load_json(CONFIG_FILE, {})
+                cfg = load_json(config_path(dev), {})
                 # 平板不需要高德 Key，默认剥离；管理员带 full=1 才返回
                 qs = parse_qs(urlparse(self.path).query)
                 if (qs.get("full") or [""])[0] == "1" and a.get("role") != "admin":
@@ -549,13 +644,13 @@ class Handler(SimpleHTTPRequestHandler):
                     cfg.pop("amap_key", None)
                 return self._send_json(cfg)
             if p == "/api/weather":
-                return self._send_json(get_weather())
+                return self._send_json(get_weather(dev))
             if p == "/api/holidays":
                 return self._send_json(get_holidays())
             if p == "/api/check":
-                cfg = load_json(CONFIG_FILE, {})
+                cfg = load_json(config_path(dev), {})
                 return self._send_json({"ok": True,
-                                        "todo_rev": get_todo_rev(),
+                                        "todo_rev": get_todo_rev(dev),
                                         "config_rev": int(cfg.get("rev", 0) or 0)})
             return self._send_json({"ok": True})
         if p == "/":
@@ -564,12 +659,13 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         p = urlparse(self.path).path
-        if p not in ("/api/todos", "/api/config", "/api/login", "/api/logout", "/api/users"):
+        if p not in ("/api/todos", "/api/config", "/api/login", "/api/logout",
+                     "/api/users", "/api/devices"):
             return self.send_error(404)
         a = self._auth()
-        if p in ("/api/todos", "/api/config", "/api/users") and a is None:
+        if p in ("/api/todos", "/api/config", "/api/users", "/api/devices") and a is None:
             return self._send_json({"error": "未登录"}, 401)
-        if p == "/api/users" and a.get("role") != "admin":
+        if p in ("/api/users", "/api/devices") and a.get("role") != "admin":
             return self._send_json({"error": "需要管理员权限"}, 403)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
@@ -585,27 +681,75 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json({"ok": True})
             if p == "/api/users":
                 return self._handle_users(doc)
+            if p == "/api/devices":
+                return self._handle_devices(doc)
             if p == "/api/todos":
+                dev = self._resolve_dev(a)
+                if dev is None:
+                    return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
                 out = validate_todos(doc)
-                with _SAVE_LOCK:
-                    rev = get_todo_rev() + 1
-                    out["rev"] = rev
-                    atomic_write(STATE_FILE, json.dumps({"todo_rev": rev}))
-                    atomic_write(TODOS_FILE, json.dumps(out, ensure_ascii=False, indent=2))
+                # bump_todo_rev 内部自带 _SAVE_LOCK，这里不能再包一层（非重入锁会自死锁）
+                rev = bump_todo_rev(dev)
+                out["rev"] = rev
+                atomic_write(todos_path(dev), json.dumps(out, ensure_ascii=False, indent=2))
                 return self._send_json({"ok": True, "rev": rev})
-            cfg = load_json(CONFIG_FILE, {})
+            # /api/config
+            dev = self._resolve_dev(a)
+            if dev is None:
+                return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
+            cfg = load_json(config_path(dev), {})
             for k in ("city", "lat", "lon", "night_start", "night_end",
                       "night_clock_only", "remind_sound", "todos_min", "weather_min",
                       "amap_key", "adcode"):
                 if k in doc:
                     cfg[k] = doc[k]
             cfg["rev"] = int(cfg.get("rev", 0)) + 1
-            atomic_write(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
+            atomic_write(config_path(dev), json.dumps(cfg, ensure_ascii=False, indent=2))
             return self._send_json({"ok": True, "rev": cfg["rev"]})
         except ValueError as e:
             return self._send_json({"error": str(e)}, 400)
         except Exception as e:
             return self._send_json({"error": "保存失败: %s" % e}, 500)
+
+    def _handle_devices(self, doc):
+        act = str(doc.get("action", ""))
+        devices = load_devices()["devices"]
+        if act == "add":
+            name = str(doc.get("name", "")).strip()[:32] or "未命名平板"
+            devid = "d" + secrets.token_hex(4)
+            while any(d.get("id") == devid for d in devices):
+                devid = "d" + secrets.token_hex(4)
+            token = secrets.token_hex(16).upper()
+            devices.append({"id": devid, "name": name, "token": token})
+            atomic_write(todos_path(devid), json.dumps(
+                {"version": 1, "rev": 0, "todos": []}, ensure_ascii=False, indent=2))
+            atomic_write(config_path(devid), json.dumps(
+                {"rev": 0, "city": "", "lat": 0.0, "lon": 0.0,
+                 "night_start": "22:30", "night_end": "06:30",
+                 "night_clock_only": False, "remind_sound": True,
+                 "todos_min": 60, "weather_min": 60}, ensure_ascii=False, indent=2))
+            save = {"devices": devices}
+            atomic_write(DEVICES_FILE, json.dumps(save, ensure_ascii=False, indent=2))
+            return self._send_json({"ok": True, "id": devid, "token": token, "name": name})
+        devid = str(doc.get("id", ""))
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", devid or ""):
+            return self._send_json({"error": "设备不存在"}, 404)
+        dev = next((d for d in devices if d.get("id") == devid), None)
+        if dev is None:
+            return self._send_json({"error": "设备不存在"}, 404)
+        if act == "rename":
+            name = str(doc.get("name", "")).strip()[:32]
+            if not name:
+                return self._send_json({"error": "名称不能为空"}, 400)
+            dev["name"] = name
+        elif act == "del":
+            if len(devices) <= 1:
+                return self._send_json({"error": "至少保留一台设备"}, 400)
+            devices = [d for d in devices if d.get("id") != devid]
+        else:
+            return self._send_json({"error": "未知操作"}, 400)
+        atomic_write(DEVICES_FILE, json.dumps({"devices": devices}, ensure_ascii=False, indent=2))
+        return self._send_json({"ok": True})
 
     def end_headers(self):
         # 设置页更新后手机端立即生效，避免缓存旧页面

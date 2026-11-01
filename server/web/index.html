@@ -67,6 +67,20 @@
     <span class="conn"><span id="who"></span> <button class="mini" id="btnLogout" hidden>退出登录</button> <span id="conn"></span></span>
   </header>
 
+  <!-- ============ 设备切换（多平板） ============ -->
+  <section id="secDev" hidden>
+    <h2>设备 <small>每台平板各自独立的待办、设置与口令</small></h2>
+    <div class="row">
+      <select id="devSel"></select>
+      <span id="devOps" style="display:flex; gap:6px; flex:0 0 auto">
+        <button class="mini" id="btnDevAdd">＋ 添加设备</button>
+        <button class="mini" id="btnDevRename">改名</button>
+        <button class="mini" id="btnDevDel">删除</button>
+      </span>
+    </div>
+    <div class="hint" id="devHint"></div>
+  </section>
+
   <!-- ============ 待办管理 ============ -->
   <section>
     <h2>待办管理<small id="dirty" class="dirty">有未保存的修改</small></h2>
@@ -194,6 +208,8 @@
 (function () {
   var qs = new URLSearchParams(location.search);
   var auth = { mode: "", value: "", user: "", role: "" };
+  var curDev = localStorage.getItem("cd_dev") || "default";
+  var devList = [];
   var todos = [], dirty = false, editing = false, geo = { lat: null, lon: null };
   var WD = ["日", "一", "二", "三", "四", "五", "六"];
 
@@ -204,6 +220,11 @@
   }
   function setDirty(d) {
     dirty = d; $("dirty").className = "dirty" + (d ? " show" : "");
+  }
+  /* 设备级接口补 devid（设备口令模式由服务器自动解析，无需 devid） */
+  function dp(path) {
+    if (auth.mode !== "session") return path;
+    return path + (path.indexOf("?") >= 0 ? "&" : "?") + "devid=" + encodeURIComponent(curDev);
   }
   function api(path, method, body) {
     var opt = { method: method || "GET", headers: { "Content-Type": "application/json" } };
@@ -330,8 +351,8 @@
     setDirty(true); clearForm(); renderTodos(); toast("已加入列表，记得点「保存到服务器」");
   });
   $("btnSaveTodos").addEventListener("click", function () {
-    api("/api/todos", "POST", { version: 1, todos: todos })
-      .then(function () { setDirty(false); toast("已保存 ✓"); })
+    api(dp("/api/todos"), "POST", { version: 1, todos: todos })
+      .then(function () { setDirty(false); toast("已保存 ✓，该设备约 1 分钟内更新"); })
       .catch(function (e) { toast("保存失败：" + e.message, 3500); });
   });
 
@@ -416,27 +437,77 @@
       todos_min: Math.max(1, parseInt($("pTodosMin").value, 10) || 10),
       weather_min: Math.max(5, parseInt($("pWxMin").value, 10) || 30)
     };
-    api("/api/config", "POST", cfg)
-      .then(function () { toast("已推送 ✓ 平板下次同步时生效"); })
+    api(dp("/api/config"), "POST", cfg)
+      .then(function () { toast("已推送 ✓ 该设备约 1 分钟内生效"); })
       .catch(function (e) { toast("推送失败：" + e.message, 3500); });
   });
 
+  /* ---------- 设备切换与管理 ---------- */
+  function loadDevices() {
+    return api("/api/devices").then(function (j) {
+      devList = j.devices || [];
+      if (!devList.some(function (d) { return d.id === curDev; })) {
+        curDev = devList.length ? devList[0].id : "default";
+        localStorage.setItem("cd_dev", curDev);
+      }
+      var sel = $("devSel");
+      sel.innerHTML = "";
+      for (var i = 0; i < devList.length; i++) {
+        var o = document.createElement("option");
+        o.value = devList[i].id;
+        o.textContent = devList[i].name || devList[i].id;
+        sel.appendChild(o);
+      }
+      sel.value = curDev;
+      $("devOps").style.display = auth.role === "admin" ? "flex" : "none";
+      var cur = null;
+      for (var k = 0; k < devList.length; k++) if (devList[k].id === curDev) cur = devList[k];
+      $("devHint").textContent = cur
+        ? (auth.role === "admin"
+          ? "「" + (cur.name || cur.id) + "」的设备口令：" + cur.token + "（在平板设置里配置这台设备时用）"
+          : "当前正在管理：" + (cur.name || cur.id))
+        : "";
+    }).catch(function (e) { $("devHint").textContent = "设备列表加载失败：" + e.message; });
+  }
+  $("devSel").addEventListener("change", function () {
+    curDev = this.value; localStorage.setItem("cd_dev", curDev);
+    setDirty(false);
+    loadData();
+    loadDevices();
+  });
+  $("btnDevAdd").addEventListener("click", function () {
+    var name = prompt("新设备名称（例如：爸妈家 / 卧室）：");
+    if (!name) return;
+    api("/api/devices", "POST", { action: "add", name: name })
+      .then(function (j) {
+        toast("设备已添加，口令：" + j.token, 6000);
+        curDev = j.id; localStorage.setItem("cd_dev", curDev);
+        return loadDevices().then(loadData);
+      })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("btnDevRename").addEventListener("click", function () {
+    var name = prompt("改名：", "");
+    if (!name) return;
+    api("/api/devices", "POST", { action: "rename", id: curDev, name: name })
+      .then(function () { return loadDevices(); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("btnDevDel").addEventListener("click", function () {
+    if (!confirm("删除设备 " + curDev + "？其待办与设置将不再可管理（数据文件保留在服务器上）。")) return;
+    api("/api/devices", "POST", { action: "del", id: curDev })
+      .then(function () {
+        toast("已删除 ✓");
+        return loadDevices().then(loadData);
+      })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+
   /* ---------- 启动 / 登录 / 用户管理 ---------- */
-  function start() {
-    $("noauth").hidden = true; $("app").hidden = false;
-    $("who").textContent = auth.mode === "session"
-      ? auth.user + (auth.role === "admin" ? " · 管理员" : " · 用户")
-      : "设备口令模式";
-    $("btnLogout").hidden = false;
-    $("secUsers").hidden = auth.role !== "admin";
-    $("manualUrl").textContent = location.origin;
-    $("manualToken").textContent = auth.mode === "token"
-      ? auth.value : "（见服务器 data/server-token.txt）";
-    api("/api/ping").then(function () { $("conn").innerHTML = '<span class="ok">已连接</span>'; })
-      .catch(function (e) { $("conn").innerHTML = '<span class="err">连接失败：' + esc(e.message) + "</span>"; });
-    api("/api/todos").then(function (j) { todos = j.todos || []; renderTodos(); })
+  function loadData() {
+    api(dp("/api/todos")).then(function (j) { todos = j.todos || []; renderTodos(); })
       .catch(function (e) { toast("读取待办失败：" + e.message, 3500); });
-    api("/api/config?full=1").then(function (c) {
+    api(dp("/api/config" + (auth.role === "admin" ? "?full=1" : ""))).then(function (c) {
       if (!c) return;
       $("pCity").value = c.city || ""; $("pNightStart").value = c.night_start || "22:30";
       $("pNightEnd").value = c.night_end || "06:30"; $("pNightOnly").checked = !!c.night_clock_only;
@@ -446,6 +517,25 @@
       adcode = c.adcode || ""; setHintAdcode(adcode ? adcode + " ✓" : "");
       if (c.lat && c.lon) { geo.lat = c.lat; geo.lon = c.lon; setHintGeo(c.lat, c.lon); }
     }).catch(function () {});
+  }
+  function start() {
+    $("noauth").hidden = true; $("app").hidden = false;
+    $("who").textContent = auth.mode === "session"
+      ? auth.user + (auth.role === "admin" ? " · 管理员" : " · 用户")
+      : "设备口令模式";
+    $("btnLogout").hidden = false;
+    $("secUsers").hidden = auth.role !== "admin";
+    $("secDev").hidden = auth.mode !== "session"; // 设备口令模式本身绑定一台设备
+    $("manualUrl").textContent = location.origin;
+    $("manualToken").textContent = auth.mode === "token"
+      ? auth.value : "（管理员可在上方“设备”区块查看所选设备的口令）";
+    api("/api/ping").then(function () { $("conn").innerHTML = '<span class="ok">已连接</span>'; })
+      .catch(function (e) { $("conn").innerHTML = '<span class="err">连接失败：' + esc(e.message) + "</span>"; });
+    if (auth.mode === "session") {
+      loadDevices().then(loadData);
+    } else {
+      loadData();
+    }
     if (auth.role === "admin") renderUsers();
   }
   function showLogin() {
