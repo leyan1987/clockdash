@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">时钟看板</string>
+    <string name="todo_title">近期待办</string>
+    <string name="ok">知道了</string>
+    <string name="snooze">10分钟后再提醒</string>
+</resources>

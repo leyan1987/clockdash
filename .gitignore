@@ -1,0 +1,21 @@
+# --- 构建产物 ---
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+dist/
+*.apk
+
+# --- 运行时数据 ---
+# server/data/ 包含自动生成的口令(server-token.txt)、用户待办、
+# 高德Key(app-config.json) 等隐私内容，且由服务器首次启动自动重建，
+# 因此整目录不入库。
+server/data/
+
+# --- 工具与临时文件 ---
+*.log
+*.tmp
+*.class
+__pycache__/
+.DS_Store
+Thumbs.db

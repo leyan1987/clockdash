@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView style="@style/SecTitle" android:text="服务器" />
+        <EditText android:id="@+id/etUrl" style="@style/Et" android:hint="例如 http://123.45.67.89:8765" />
+        <EditText android:id="@+id/etToken" style="@style/Et" android:hint="口令（服务器 data/server-token.txt）" />
+        <LinearLayout style="@style/BtnRow">
+            <Button android:id="@+id/btnTest" style="@style/Btn" android:text="保存并测试连接" />
+            <Button android:id="@+id/btnScan" style="@style/Btn" android:text="扫二维码导入" />
+        </LinearLayout>
+        <LinearLayout style="@style/BtnRow">
+            <Button android:id="@+id/btnPair" style="@style/Btn" android:text="手机扫码配置(推荐)" />
+            <Button android:id="@+id/btnShowPageQr" style="@style/Btn" android:text="显示设置页二维码" />
+            <Button android:id="@+id/btnImport" style="@style/Btn" android:text="从存储卡导入" />
+        </LinearLayout>
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="4dp"
+            android:text="首次配置推荐「手机扫码配置」：平板出示二维码，手机扫码后在网页里填写地址，平板立即生效，不用碰平板键盘。" />
+
+        <TextView style="@style/SecTitle" android:text="天气位置（也可由手机后台推送）" />
+        <EditText android:id="@+id/etCity" style="@style/Et" android:hint="城市名，仅用于显示" />
+        <LinearLayout style="@style/BtnRow">
+            <EditText android:id="@+id/etLat" style="@style/Et" android:layout_weight="1" android:hint="纬度 如 39.90" android:inputType="numberDecimal|numberSigned" />
+            <EditText android:id="@+id/etLon" style="@style/Et" android:layout_weight="1" android:hint="经度 如 116.40" android:inputType="numberDecimal|numberSigned" />
+        </LinearLayout>
+
+        <TextView style="@style/SecTitle" android:text="夜间模式" />
+        <LinearLayout style="@style/BtnRow">
+            <EditText android:id="@+id/etNightStart" style="@style/Et" android:layout_weight="1" android:hint="开始 22:30" />
+            <EditText android:id="@+id/etNightEnd" style="@style/Et" android:layout_weight="1" android:hint="结束 06:30" />
+        </LinearLayout>
+        <CheckBox android:id="@+id/cbNightOnly" style="@style/Cb" android:text="夜间只显示时钟（自动调暗屏幕）" />
+        <CheckBox android:id="@+id/cbSound" style="@style/Cb" android:text="提醒时播放铃声并震动" />
+
+        <TextView style="@style/SecTitle" android:text="刷新间隔（分钟）" />
+        <LinearLayout style="@style/BtnRow">
+            <EditText android:id="@+id/etTodoMin" style="@style/Et" android:layout_weight="1" android:hint="待办 10" android:inputType="number" />
+            <EditText android:id="@+id/etWxMin" style="@style/Et" android:layout_weight="1" android:hint="天气 30" android:inputType="number" />
+        </LinearLayout>
+
+        <TextView style="@style/SecTitle" android:text="屏幕常亮" />
+        <CheckBox
+            android:id="@+id/cbStayOn" style="@style/Cb"
+            android:text="充电时屏幕永不休眠（推荐开启）" />
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
+            android:text="开启后会修改系统设置“充电时保持唤醒”。注意：老电池长期满电插电可能鼓包，条件允许可拆掉电池直接用电源供电。" />
+
+        <Button
+            android:id="@+id/btnBack"
+            android:layout_width="match_parent" android:layout_height="52dp"
+            android:layout_marginTop="20dp" android:textSize="17sp"
+            android:text="返回看板" />
+    </LinearLayout>
+</ScrollView>

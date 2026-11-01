@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>时钟看板 · 后台设置</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#ffffff; --fg:#1c2733; --muted:#66788a; --line:#dde4ea; --accent:#2f7fd1; --ok:#2e9e5b; --err:#d05a4e; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font: 15px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",system-ui,sans-serif; }
+  header { background:#1c2733; color:#fff; padding:12px 16px; font-size:17px; font-weight:600;
+           display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; }
+  header .conn { font-size:12px; font-weight:400; opacity:.85; }
+  main { max-width: 760px; margin: 0 auto; padding: 14px 12px 60px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px;
+            padding:14px; margin-bottom:14px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  h2 small { color:var(--muted); font-weight:400; font-size:12px; margin-left:8px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input, select { width:100%; padding:9px 10px; font-size:15px; border:1px solid var(--line);
+                  border-radius:8px; background:#fff; color:var(--fg); }
+  .row { display:flex; gap:10px; } .row > * { flex:1; min-width:0; }
+  .checks { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+  .checks label { display:flex; align-items:center; gap:4px; margin:0; color:var(--fg);
+                  border:1px solid var(--line); border-radius:8px; padding:6px 10px; font-size:14px; }
+  .checks input { width:auto; }
+  .linecheck { display:flex; align-items:center; gap:8px; margin-top:10px; font-size:14px; }
+  .linecheck input { width:auto; }
+  button { border:0; border-radius:8px; padding:10px 14px; font-size:15px; cursor:pointer;
+           background:#e6ebf1; color:var(--fg); }
+  button.primary { background:var(--accent); color:#fff; }
+  button.mini { padding:5px 9px; font-size:13px; }
+  .btnrow { display:flex; gap:10px; margin-top:14px; flex-wrap:wrap; }
+  .btnrow button { flex:1; min-width:110px; }
+  .todo { border-bottom:1px solid var(--line); padding:10px 2px; display:flex; align-items:center; gap:8px; }
+  .todo:last-child { border-bottom:0; }
+  .todo .t-main { flex:1; min-width:0; }
+  .todo .t-title { font-weight:600; }
+  .todo .t-meta { font-size:12.5px; color:var(--muted); }
+  .todo .t-ops { display:flex; gap:4px; flex-shrink:0; }
+  .hint { font-size:12.5px; color:var(--muted); margin-top:6px; }
+  .ok { color:var(--ok); } .err { color:var(--err); }
+  #noauth { max-width:420px; margin:80px auto; text-align:center; }
+  .cond { display:none; }
+  .cond.show { display:block; }
+  .dirty { color:var(--err); font-size:12.5px; margin-left:8px; display:none; }
+  .dirty.show { display:inline; }
+  #toast { position:fixed; left:50%; bottom:26px; transform:translateX(-50%); background:#1c2733;
+           color:#fff; padding:9px 16px; border-radius:8px; font-size:14px; display:none; z-index:9; }
+</style>
+</head>
+<body>
+
+<div id="noauth" hidden>
+  <h2>时钟看板 · 后台设置</h2>
+  <p style="color:var(--muted)">请输入设置口令（平板设置页二维码里包含口令，或见服务器启动提示 / data/server-token.txt）</p>
+  <input id="tkInput" placeholder="口令" style="text-align:center">
+  <div class="btnrow"><button class="primary" id="tkGo">进入</button></div>
+</div>
+
+<main id="app" hidden>
+  <header style="margin:-14px -12px 14px; border-radius:0">
+    <span>时钟看板 · 后台设置</span><span class="conn" id="conn"></span>
+  </header>
+
+  <!-- ============ 待办管理 ============ -->
+  <section>
+    <h2>待办管理<small id="dirty" class="dirty">有未保存的修改</small></h2>
+    <div id="todoList"></div>
+    <div class="btnrow">
+      <button id="btnAdd">＋ 添加一条</button>
+      <button class="primary" id="btnSaveTodos">保存到服务器</button>
+    </div>
+
+    <div id="todoForm" style="display:none; border-top:1px dashed var(--line); margin-top:12px; padding-top:4px">
+      <input type="hidden" id="fId">
+      <label>标题</label><input id="fTitle" placeholder="例如：交物业费">
+      <div class="row">
+        <div><label>开始日期</label><input type="date" id="fDate"></div>
+        <div><label>时间</label><input type="time" id="fTime"></div>
+      </div>
+      <div class="row">
+        <div><label>提前提醒</label>
+          <select id="fRemind">
+            <option value="0">准时提醒</option>
+            <option value="5">提前 5 分钟</option>
+            <option value="10" selected>提前 10 分钟</option>
+            <option value="30">提前 30 分钟</option>
+            <option value="60">提前 1 小时</option>
+            <option value="120">提前 2 小时</option>
+            <option value="1440">提前 1 天</option>
+            <option value="-1">不提醒</option>
+          </select>
+        </div>
+        <div><label>重复</label>
+          <select id="fRepeat">
+            <option value="none">不重复</option>
+            <option value="hourly">按小时</option>
+            <option value="daily">按天</option>
+            <option value="weekly">按周</option>
+            <option value="monthly">按月</option>
+            <option value="yearly">按年</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="condWeekly" class="cond">
+        <label>重复在（周几，可多选）</label>
+        <div class="checks" id="fWeekdays">
+          <label><input type="checkbox" value="1">一</label><label><input type="checkbox" value="2">二</label>
+          <label><input type="checkbox" value="3">三</label><label><input type="checkbox" value="4">四</label>
+          <label><input type="checkbox" value="5">五</label><label><input type="checkbox" value="6">六</label>
+          <label><input type="checkbox" value="7">日</label>
+        </div>
+      </div>
+      <div id="condHourly" class="cond">
+        <div class="row">
+          <div><label>每 N 小时</label><input type="number" id="fIntervalH" value="2" min="1"></div>
+          <div><label>生效从</label><input type="time" id="fWinFrom" value="08:00"></div>
+          <div><label>到</label><input type="time" id="fWinTo" value="22:00"></div>
+        </div>
+      </div>
+      <div id="condDaily" class="cond"><label>每 N 天</label><input type="number" id="fIntervalD" value="1" min="1"></div>
+      <div id="condWeeklyN" class="cond"><label>每 N 周</label><input type="number" id="fIntervalW" value="1" min="1"></div>
+      <div id="condMonthly" class="cond"><label>每 N 月</label><input type="number" id="fIntervalM" value="1" min="1"></div>
+      <div id="condYearly" class="cond"><label>每 N 年</label><input type="number" id="fIntervalY" value="1" min="1"></div>
+      <label>结束日期（可选）</label><input type="date" id="fEnd">
+
+      <div class="btnrow">
+        <button class="primary" id="btnFormOk">确定</button>
+        <button id="btnFormCancel">取消</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 显示设置推送 ============ -->
+  <section>
+    <h2>显示设置 <small>推送到平板（天气位置、夜间模式、刷新频率）</small></h2>
+    <label>高德 Key（Web服务 类型，选填；填了天气就走高德，更准）</label>
+    <input id="pAmapKey" placeholder="高德开放平台 Key，只保存在这台服务器上">
+    <label>城市（用于显示名称，可搜索；有 Key 时搜高德行政区，没有则搜经纬度）</label>
+    <div class="row">
+      <input id="pCity" placeholder="例如：北京 / 海淀区">
+      <button id="btnGeo" style="flex:0 0 90px">搜索</button>
+    </div>
+    <div id="geoList" style="margin-top:8px"></div>
+    <div class="hint">行政区划：<span id="hintAdcode">未设置</span>（高德用）</div>
+    <div class="hint">备用经纬度：<span id="geoHint">未设置</span>（Open-Meteo 兜底用，搜索后自动填入）</div>
+    <div class="row">
+      <div><label>夜间模式开始</label><input type="time" id="pNightStart"></div>
+      <div><label>夜间模式结束</label><input type="time" id="pNightEnd"></div>
+    </div>
+    <div class="linecheck"><input type="checkbox" id="pNightOnly"><label for="pNightOnly" style="margin:0;color:var(--fg)">夜间只显示时钟（更暗、更省眼）</label></div>
+    <div class="linecheck"><input type="checkbox" id="pSound"><label for="pSound" style="margin:0;color:var(--fg)">提醒时播放铃声并震动</label></div>
+    <div class="row">
+      <div><label>待办刷新间隔（分钟）</label><input type="number" id="pTodosMin" min="1" value="10"></div>
+      <div><label>天气刷新间隔（分钟）</label><input type="number" id="pWxMin" min="5" value="30"></div>
+    </div>
+    <div class="btnrow"><button class="primary" id="btnPush">推送到平板</button></div>
+    <div class="hint">推送后平板会在下一次同步时自动应用（服务器地址和口令不受影响）。</div>
+  </section>
+
+  <!-- ============ 平板基本配置 ============ -->
+  <section>
+    <h2>平板基本配置 <small>方向：平板出示二维码，手机扫码填写</small></h2>
+    <div class="hint">服务器地址、口令等基本设置：平板端 → 设置 → 「手机扫码配置」→ 用手机扫平板屏幕上的二维码，在手机网页里填写并保存，平板立即生效（需要与平板同一 WiFi）。</div>
+    <label style="margin-top:14px">手动输入用信息（备用）</label>
+    <div class="hint">服务器地址：<b id="manualUrl"></b></div>
+    <div class="hint">口令：<b id="manualToken"></b></div>
+  </section>
+</main>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  var qs = new URLSearchParams(location.search);
+  var token = qs.get("token") || localStorage.getItem("cd_token") || "";
+  var todos = [], dirty = false, editing = false, geo = { lat: null, lon: null };
+  var WD = ["日", "一", "二", "三", "四", "五", "六"];
+
+  function $(id) { return document.getElementById(id); }
+  function toast(msg, ms) {
+    var t = $("toast"); t.textContent = msg; t.style.display = "block";
+    clearTimeout(t._h); t._h = setTimeout(function () { t.style.display = "none"; }, ms || 2200);
+  }
+  function setDirty(d) {
+    dirty = d; $("dirty").className = "dirty" + (d ? " show" : "");
+  }
+  function api(path, method, body) {
+    var opt = { method: method || "GET", headers: { "Content-Type": "application/json" } };
+    if (body) opt.body = JSON.stringify(body);
+    return fetch(path + "?token=" + encodeURIComponent(token), opt)
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || r.status); return j; }); });
+  }
+
+  /* ---------- 待办 ---------- */
+  function repeatDesc(t) {
+    var n = t.interval || 1;
+    switch (t.repeat) {
+      case "hourly": return "每" + n + "小时 (" + (t.window_from || "08:00") + "–" + (t.window_to || "22:00") + ")";
+      case "daily": return "每" + (n > 1 ? n + "天" : "天");
+      case "weekly": {
+        var s = "每" + (n > 1 ? n + "周" : "周");
+        if (t.weekdays && t.weekdays.length) {
+          var ws = []; for (var i = 0; i < t.weekdays.length; i++) ws.push(WD[t.weekdays[i] % 7]);
+          s += " · 周" + ws.join("、周");
+        } else s += "（按开始日期的星期）";
+        return s;
+      }
+      case "monthly": return "每" + (n > 1 ? n + "个月" : "月");
+      case "yearly": return "每" + (n > 1 ? n + "年" : "年");
+      default: return "不重复";
+    }
+  }
+  function renderTodos() {
+    var html = "";
+    for (var i = 0; i < todos.length; i++) {
+      var t = todos[i];
+      var end = t.end ? "，至 " + t.end : "";
+      html += '<div class="todo"><div class="t-main">'
+        + '<div class="t-title">' + esc(t.title) + '</div>'
+        + '<div class="t-meta">' + t.date + " " + t.time + " · " + repeatDesc(t) + end
+        + " · " + (t.remind < 0 ? "不提醒" : (t.remind === 0 ? "准时提醒" : "提前" + remTxt(t.remind))) + '</div></div>'
+        + '<div class="t-ops">'
+        + '<button class="mini" data-a="up" data-i="' + i + '">↑</button>'
+        + '<button class="mini" data-a="down" data-i="' + i + '">↓</button>'
+        + '<button class="mini" data-a="edit" data-i="' + i + '">编辑</button>'
+        + '<button class="mini" data-a="del" data-i="' + i + '">删除</button>'
+        + '</div></div>';
+    }
+    $("todoList").innerHTML = html || '<div class="hint">还没有待办，点「添加一条」。</div>';
+  }
+  function remTxt(m) { return m >= 1440 ? (m / 1440) + "天" : m >= 60 ? (m / 60) + "小时" : m + "分钟"; }
+  function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+
+  $("todoList").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    var i = +b.dataset.i, a = b.dataset.a;
+    if (a === "del") { if (confirm("删除「" + todos[i].title + "」？")) { todos.splice(i, 1); setDirty(true); renderTodos(); } }
+    else if (a === "up" && i > 0) { var x = todos[i]; todos[i] = todos[i - 1]; todos[i - 1] = x; setDirty(true); renderTodos(); }
+    else if (a === "down" && i < todos.length - 1) { var y = todos[i]; todos[i] = todos[i + 1]; todos[i + 1] = y; setDirty(true); renderTodos(); }
+    else if (a === "edit") { fillForm(todos[i]); }
+  });
+
+  function showConds(rep) {
+    $("condHourly").className = "cond" + (rep === "hourly" ? " show" : "");
+    $("condDaily").className = "cond" + (rep === "daily" ? " show" : "");
+    $("condWeekly").className = "cond" + (rep === "weekly" ? " show" : "");
+    $("condWeeklyN").className = "cond" + (rep === "weekly" ? " show" : "");
+    $("condMonthly").className = "cond" + (rep === "monthly" ? " show" : "");
+    $("condYearly").className = "cond" + (rep === "yearly" ? " show" : "");
+  }
+  $("fRepeat").addEventListener("change", function () { showConds(this.value); });
+
+  function fillForm(t) {
+    editing = true; $("todoForm").style.display = "block";
+    $("fId").value = t.id; $("fTitle").value = t.title;
+    $("fDate").value = t.date; $("fTime").value = t.time;
+    $("fRemind").value = String(t.remind); $("fRepeat").value = t.repeat || "none";
+    showConds($("fRepeat").value);
+    var wds = $("fWeekdays").querySelectorAll("input");
+    for (var k = 0; k < wds.length; k++) wds[k].checked = !!(t.weekdays && t.weekdays.indexOf(+wds[k].value) >= 0);
+    $("fIntervalH").value = t.interval || 2; $("fIntervalD").value = t.interval || 1;
+    $("fIntervalW").value = t.interval || 1; $("fIntervalM").value = t.interval || 1;
+    $("fIntervalY").value = t.interval || 1;
+    $("fWinFrom").value = t.window_from || "08:00"; $("fWinTo").value = t.window_to || "22:00";
+    $("fEnd").value = t.end || "";
+    $("todoForm").scrollIntoView({ behavior: "smooth" });
+  }
+  function clearForm() {
+    editing = false; $("todoForm").style.display = "none";
+    $("fId").value = ""; $("fTitle").value = ""; $("fEnd").value = "";
+  }
+  $("btnAdd").addEventListener("click", function () {
+    fillForm({ id: "t" + Date.now(), title: "", date: new Date().toISOString().slice(0, 10),
+               time: "09:00", remind: 10, repeat: "none", interval: 1 });
+  });
+  $("btnFormCancel").addEventListener("click", clearForm);
+  $("btnFormOk").addEventListener("click", function () {
+    var t = {
+      id: $("fId").value || ("t" + Date.now()),
+      title: $("fTitle").value.trim(),
+      date: $("fDate").value, time: $("fTime").value,
+      remind: parseInt($("fRemind").value, 10),
+      repeat: $("fRepeat").value
+    };
+    if (!t.title) return toast("请填写标题");
+    if (!t.date || !t.time) return toast("请填写日期和时间");
+    if (t.repeat !== "none") t.interval = Math.max(1, parseInt(
+      t.repeat === "hourly" ? $("fIntervalH").value :
+      t.repeat === "daily" ? $("fIntervalD").value :
+      t.repeat === "weekly" ? $("fIntervalW").value :
+      t.repeat === "monthly" ? $("fIntervalM").value : $("fIntervalY").value, 10) || 1);
+    if (t.repeat === "weekly") {
+      t.weekdays = [];
+      var wds = $("fWeekdays").querySelectorAll("input:checked");
+      for (var k = 0; k < wds.length; k++) t.weekdays.push(+wds[k].value);
+    }
+    if (t.repeat === "hourly") { t.window_from = $("fWinFrom").value || "08:00"; t.window_to = $("fWinTo").value || "22:00"; }
+    if ($("fEnd").value) t.end = $("fEnd").value;
+    var found = false;
+    for (var i = 0; i < todos.length; i++) if (todos[i].id === t.id) { todos[i] = t; found = true; }
+    if (!found) todos.push(t);
+    setDirty(true); clearForm(); renderTodos(); toast("已加入列表，记得点「保存到服务器」");
+  });
+  $("btnSaveTodos").addEventListener("click", function () {
+    api("/api/todos", "POST", { version: 1, todos: todos })
+      .then(function () { setDirty(false); toast("已保存 ✓"); })
+      .catch(function (e) { toast("保存失败：" + e.message, 3500); });
+  });
+
+  /* ---------- 推送配置 ---------- */
+  var adcode = "";
+  function setHintAdcode(v) { $("hintAdcode").textContent = v || "未设置"; }
+  function setHintGeo(lat, lon) { $("geoHint").textContent = (lat && lon) ? lat + ", " + lon + " ✓" : "未设置"; }
+  function geocodeOpenMeteo(name) {
+    /* 高德选定城市后，顺手取一份经纬度给 Open-Meteo 兜底用（失败不影响） */
+    fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(name)
+      + "&count=1&language=zh&format=json")
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.results && j.results.length) {
+          geo.lat = j.results[0].latitude; geo.lon = j.results[0].longitude;
+          setHintGeo(geo.lat, geo.lon);
+        }
+      }).catch(function () {});
+  }
+  $("btnGeo").addEventListener("click", function () {
+    var name = $("pCity").value.trim(); if (!name) return toast("请输入城市名");
+    var key = $("pAmapKey").value.trim();
+    if (key) {
+      fetch("https://restapi.amap.com/v3/config/district?keywords=" + encodeURIComponent(name)
+        + "&subdistrict=0&key=" + encodeURIComponent(key) + "&offset=6&page=1&extensions=base")
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j.status !== "1" || !j.districts || !j.districts.length) {
+            $("geoList").innerHTML = '<span class="err">高德没找到：' + esc(j.info || "未知错误")
+              + (j.infocode === "10001" ? "（Key 无效）" : j.infocode === "10009" ? "（Key 无天气/行政区权限）" : "") + "</span>";
+            return;
+          }
+          var html = "";
+          for (var i = 0; i < j.districts.length && i < 6; i++) {
+            var d = j.districts[i];
+            html += '<button class="mini" style="margin:2px" data-adcode="' + d.adcode + '" data-name="' + esc(d.name) + '">'
+              + esc(d.name) + "（" + d.adcode + "）</button>";
+          }
+          $("geoList").innerHTML = html;
+        })
+        .catch(function () { $("geoList").innerHTML = '<span class="err">搜索失败，请检查网络</span>'; });
+    } else {
+      fetch("https://geocoding-api.open-meteo.com/v1/search?name=" + encodeURIComponent(name)
+        + "&count=5&language=zh&format=json")
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          var list = (j.results || []).slice(0, 5), html = "";
+          for (var i = 0; i < list.length; i++) {
+            var g = list[i];
+            html += '<button class="mini" style="margin:2px" data-lat="' + g.latitude + '" data-lon="' + g.longitude + '">'
+              + esc([g.name, g.admin1, g.country].filter(Boolean).join(", "))
+              + " (" + g.latitude.toFixed(2) + "," + g.longitude.toFixed(2) + ")</button>";
+          }
+          $("geoList").innerHTML = html || '<span class="err">没有找到该城市</span>';
+        })
+        .catch(function () { $("geoList").innerHTML = '<span class="err">搜索失败，请检查网络</span>'; });
+    }
+  });
+  $("geoList").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.adcode) {
+      adcode = b.dataset.adcode;
+      $("pCity").value = b.dataset.name;
+      setHintAdcode(adcode + " ✓");
+      geocodeOpenMeteo(b.dataset.name);
+    } else {
+      geo.lat = +b.dataset.lat; geo.lon = +b.dataset.lon;
+      setHintGeo(geo.lat, geo.lon);
+    }
+  });
+  $("btnPush").addEventListener("click", function () {
+    var cfg = {
+      city: $("pCity").value.trim(),
+      amap_key: $("pAmapKey").value.trim(),
+      adcode: adcode,
+      lat: geo.lat || 0,
+      lon: geo.lon || 0,
+      night_start: $("pNightStart").value || "22:30",
+      night_end: $("pNightEnd").value || "06:30",
+      night_clock_only: $("pNightOnly").checked,
+      remind_sound: $("pSound").checked,
+      todos_min: Math.max(1, parseInt($("pTodosMin").value, 10) || 10),
+      weather_min: Math.max(5, parseInt($("pWxMin").value, 10) || 30)
+    };
+    api("/api/config", "POST", cfg)
+      .then(function () { toast("已推送 ✓ 平板下次同步时生效"); })
+      .catch(function (e) { toast("推送失败：" + e.message, 3500); });
+  });
+
+  /* ---------- 启动 ---------- */
+  function boot() {
+    $("noauth").hidden = true; $("app").hidden = false;
+    localStorage.setItem("cd_token", token);
+    $("manualUrl").textContent = location.origin;
+    $("manualToken").textContent = token;
+    api("/api/ping").then(function () { $("conn").innerHTML = '<span class="ok">已连接</span>'; })
+      .catch(function (e) { $("conn").innerHTML = '<span class="err">连接失败：' + esc(e.message) + "</span>"; });
+    api("/api/todos").then(function (j) { todos = j.todos || []; renderTodos(); })
+      .catch(function (e) { toast("读取待办失败：" + e.message, 3500); });
+    api("/api/config").then(function (c) {
+      if (!c) return;
+      $("pCity").value = c.city || ""; $("pNightStart").value = c.night_start || "22:30";
+      $("pNightEnd").value = c.night_end || "06:30"; $("pNightOnly").checked = !!c.night_clock_only;
+      $("pSound").checked = c.remind_sound !== false;
+      $("pTodosMin").value = c.todos_min || 10; $("pWxMin").value = c.weather_min || 30;
+      $("pAmapKey").value = c.amap_key || "";
+      adcode = c.adcode || ""; setHintAdcode(adcode ? adcode + " ✓" : "");
+      if (c.lat && c.lon) { geo.lat = c.lat; geo.lon = c.lon; setHintGeo(c.lat, c.lon); }
+    }).catch(function () {});
+  }
+  if (token) { boot(); }
+  else {
+    $("noauth").hidden = false;
+    $("tkGo").addEventListener("click", function () {
+      token = $("tkInput").value.trim();
+      if (token) { boot(); } else toast("请输入口令");
+    });
+  }
+})();
+</script>
+</body>
+</html>

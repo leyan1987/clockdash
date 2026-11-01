@@ -1,0 +1,12 @@
+[Unit]
+Description=ClockDash server
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/clockdash
+ExecStart=/usr/bin/python3 /opt/clockdash/server.py 8765
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

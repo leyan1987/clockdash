@@ -1,0 +1,224 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal"
+    android:background="@color/bg">
+
+    <!-- 左栏：时钟 + 天气 -->
+    <LinearLayout
+        android:id="@+id/colLeft"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="34"
+        android:orientation="vertical"
+        android:padding="12dp">
+
+        <TextView
+            android:id="@+id/tvClock"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="74sp"
+            android:textColor="@color/fg"
+            android:text="--:--" />
+
+        <TextView
+            android:id="@+id/tvDate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:textSize="18sp"
+            android:textColor="@color/muted" />
+
+        <LinearLayout
+            android:id="@+id/boxWx"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/tvTemp"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="52sp"
+                android:textColor="@color/fg"
+                android:text="--°" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="10dp"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/tvCond"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="17sp"
+                    android:textColor="@color/muted"
+                    android:text="等待天气数据" />
+
+                <TextView
+                    android:id="@+id/tvCity"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="13sp"
+                    android:textColor="@color/dim" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvMeta"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textSize="15sp"
+            android:textColor="@color/muted" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:id="@+id/rowFc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <LinearLayout style="@style/FcCell">
+                <TextView android:id="@+id/tvFcDay0" style="@style/FcDay" />
+                <TextView android:id="@+id/tvFcTxt0" style="@style/FcTxt" />
+            </LinearLayout>
+            <LinearLayout style="@style/FcCell">
+                <TextView android:id="@+id/tvFcDay1" style="@style/FcDay" />
+                <TextView android:id="@+id/tvFcTxt1" style="@style/FcTxt" />
+            </LinearLayout>
+            <LinearLayout style="@style/FcCell">
+                <TextView android:id="@+id/tvFcDay2" style="@style/FcDay" />
+                <TextView android:id="@+id/tvFcTxt2" style="@style/FcTxt" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <View
+        android:layout_width="1dp"
+        android:layout_height="match_parent"
+        android:background="@color/line" />
+
+    <!-- 中栏：月历 -->
+    <LinearLayout
+        android:id="@+id/colMid"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="33"
+        android:orientation="vertical"
+        android:padding="10dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="bottom">
+
+            <TextView
+                android:id="@+id/tvCalTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="20sp"
+                android:textColor="@color/fg" />
+
+            <TextView
+                android:id="@+id/tvCalYear"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginLeft="8dp"
+                android:textSize="12sp"
+                android:textColor="@color/muted" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/rowWd"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <TextView android:id="@+id/wd0" style="@style/WdCell" android:text="一" />
+            <TextView android:id="@+id/wd1" style="@style/WdCell" android:text="二" />
+            <TextView android:id="@+id/wd2" style="@style/WdCell" android:text="三" />
+            <TextView android:id="@+id/wd3" style="@style/WdCell" android:text="四" />
+            <TextView android:id="@+id/wd4" style="@style/WdCell" android:text="五" />
+            <TextView android:id="@+id/wd5" style="@style/WdCell" android:text="六" />
+            <TextView android:id="@+id/wd6" style="@style/WdCell" android:text="日" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/calGrid"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="4dp"
+            android:orientation="vertical" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="1dp"
+        android:layout_height="match_parent"
+        android:background="@color/line" />
+
+    <!-- 右栏：待办 -->
+    <LinearLayout
+        android:id="@+id/colRight"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="33"
+        android:orientation="vertical"
+        android:padding="10dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textSize="18sp"
+                android:textColor="@color/fg"
+                android:text="@string/todo_title" />
+
+            <TextView
+                android:id="@+id/tvSyncNote"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginLeft="8dp"
+                android:gravity="right"
+                android:textSize="11sp"
+                android:textColor="@color/dim" />
+        </LinearLayout>
+
+        <ListView
+            android:id="@+id/listTodos"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="4dp"
+            android:divider="@null"
+            android:dividerHeight="0dp"
+            android:paddingTop="2dp"
+            android:listSelector="@android:color/transparent" />
+
+        <TextView
+            android:id="@+id/tvStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textSize="11sp"
+            android:textColor="@color/dim" />
+    </LinearLayout>
+</LinearLayout>

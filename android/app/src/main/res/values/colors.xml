@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#0f1419</color>
+    <color name="line">#232b35</color>
+    <color name="fg">#edf1f5</color>
+    <color name="muted">#8fa0af</color>
+    <color name="dim">#5c6a76</color>
+    <color name="accent">#4ea3ff</color>
+    <color name="amber">#f2b23e</color>
+    <color name="red">#e08579</color>
+    <color name="today_text">#0b1622</color>
+    <color name="out_month">#3a444f</color>
+    <color name="ban">#7fa8d9</color>
+</resources>
