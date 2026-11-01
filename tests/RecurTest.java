@@ -119,6 +119,41 @@ public class RecurTest {
         eq("中途查询命中 2 次", 2, r.size());
         eq("中途查询首日", "2026-11-05 06:00", fmt(r.get(0)));
 
+        // ---- 当天时刻场景（回归：expand 曾把查询起点错误归零到 00:00，导致“今天已过时间”一直显示）----
+        Calendar today = Calendar.getInstance();
+        String todayStr = String.format("%04d-%02d-%02d",
+                today.get(Calendar.YEAR), today.get(Calendar.MONTH) + 1, today.get(Calendar.DAY_OF_MONTH));
+        Calendar tmr = (Calendar) today.clone();
+        tmr.add(Calendar.DAY_OF_MONTH, 1);
+        String tmrStr = String.format("%04d-%02d-%02d",
+                tmr.get(Calendar.YEAR), tmr.get(Calendar.MONTH) + 1, tmr.get(Calendar.DAY_OF_MONTH));
+        Calendar nextW = (Calendar) today.clone();
+        nextW.add(Calendar.DAY_OF_MONTH, 7);
+        String nextWStr = String.format("%04d-%02d-%02d",
+                nextW.get(Calendar.YEAR), nextW.get(Calendar.MONTH) + 1, nextW.get(Calendar.DAY_OF_MONTH));
+        Calendar t0800 = (Calendar) today.clone(); t0800.set(Calendar.HOUR_OF_DAY, 8); t0800.set(Calendar.MINUTE, 0);
+        Calendar t1300 = (Calendar) today.clone(); t1300.set(Calendar.HOUR_OF_DAY, 13); t1300.set(Calendar.MINUTE, 0);
+        Calendar t2100 = (Calendar) today.clone(); t2100.set(Calendar.HOUR_OF_DAY, 21); t2100.set(Calendar.MINUTE, 0);
+        Calendar horizon = (Calendar) today.clone(); horizon.add(Calendar.DAY_OF_MONTH, 7);
+
+        // 一次性 今天09:50：13:00 查不出现；08:00 查出现且为今天 09:50
+        eq("回归:过点的一次性待办不出现", 0,
+                Recur.expand(todo("none", todayStr, "09:50"), t1300.getTimeInMillis(), horizon.getTimeInMillis()).size());
+        r = Recur.expand(todo("none", todayStr, "09:50"), t0800.getTimeInMillis(), horizon.getTimeInMillis());
+        eq("回归:未到点的一次性待办出现", 1, r.size());
+        eq("回归:时间为今天 09:50", todayStr + " 09:50", fmt(r.get(0)));
+
+        // daily 今天09:50：21:00 查 → 明天 09:50
+        r = Recur.expand(todo("daily", todayStr, "09:50"), t2100.getTimeInMillis(), horizon.getTimeInMillis());
+        eq("回归:daily 过点跳到明天 09:50", tmrStr + " 09:50", fmt(r.get(0)));
+
+        // weekly（周几=今天）今天09:50：21:00 查 → 下周同日 09:50
+        Todo tw = todo("weekly", todayStr, "09:50");
+        int dow = today.get(Calendar.DAY_OF_WEEK);
+        tw.weekdays = new int[]{dow == 1 ? 7 : dow - 1};
+        r = Recur.expand(tw, t2100.getTimeInMillis(), horizon.getTimeInMillis());
+        eq("回归:weekly 过点跳到下周同日 09:50", nextWStr + " 09:50", fmt(r.get(0)));
+
         System.out.println("\n全部通过：" + passed + " 项断言");
     }
 }

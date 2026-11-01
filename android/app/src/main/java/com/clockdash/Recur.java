@@ -35,7 +35,8 @@ public final class Recur {
         }
         Calendar from = Calendar.getInstance();
         from.setTimeInMillis(fromMs);
-        zeroTime(from);
+        // 注意：绝不能把 from 归零到当天 00:00，否则“今天已过的时间点”
+        // 会被当作 upcoming 一直显示（实测踩过的坑，见 RecurTest 当天场景）
         Calendar to = Calendar.getInstance();
         to.setTimeInMillis(toMs);
 
@@ -74,8 +75,11 @@ public final class Recur {
             }
 
         } else if ("daily".equals(rep)) {
+            // 天级快进用“from 当天 00:00”比较，精确时间过滤交给 addIfInRange
+            Calendar fromDay = (Calendar) from.clone();
+            zeroTime(fromDay);
             Calendar c = (Calendar) anchor.clone();
-            while (c.before(from)) c.add(Calendar.DAY_OF_MONTH, step);
+            while (c.before(fromDay)) c.add(Calendar.DAY_OF_MONTH, step);
             for (int guard = 0; guard < CAP_DAYS && !c.after(to) && out.size() < CAP; guard++) {
                 if (!addIfInRange(out, c, t, from, to, endLimit)) break;
                 c.add(Calendar.DAY_OF_MONTH, step);
@@ -83,14 +87,20 @@ public final class Recur {
 
         } else if ("weekly".equals(rep)) {
             if (t.weekdays == null || t.weekdays.length == 0) {
+                Calendar fromDay = (Calendar) from.clone();
+                zeroTime(fromDay);
                 Calendar c = (Calendar) anchor.clone();
-                while (c.before(from)) c.add(Calendar.DAY_OF_MONTH, 7 * step);
+                while (c.before(fromDay)) c.add(Calendar.DAY_OF_MONTH, 7 * step);
                 for (int guard = 0; guard < CAP_DAYS && !c.after(to) && out.size() < CAP; guard++) {
                     if (!addIfInRange(out, c, t, from, to, endLimit)) break;
                     c.add(Calendar.DAY_OF_MONTH, 7 * step);
                 }
             } else {
-                Calendar c = (Calendar) from.clone();
+                // 游标按“天”对齐（00:00），发生时刻的精确过滤交给 addIfInRange；
+                // 若游标带 from 的时刻，最后一天会因 after(to) 提前退出漏算
+                Calendar fromDay = (Calendar) from.clone();
+                zeroTime(fromDay);
+                Calendar c = (Calendar) fromDay.clone();
                 if (c.before(anchor)) c.setTimeInMillis(anchor.getTimeInMillis());
                 long anchorWeek = weekIndex(anchor);
                 for (int guard = 0; guard < CAP_DAYS && !c.after(to) && out.size() < CAP; guard++) {
