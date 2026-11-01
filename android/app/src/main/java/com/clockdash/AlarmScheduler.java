@@ -5,6 +5,8 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 
+import org.json.JSONArray;
+
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
@@ -61,11 +63,17 @@ public final class AlarmScheduler {
         scheduleReminders(c);
     }
 
-    /** 把未来 24 小时内的所有提醒注册为精确闹钟（4.0.3 上 set() 即精确） */
+    /**
+     * 把未来 24 小时内的所有提醒注册为精确闹钟（4.0.3 上 set() 即精确）。
+     * 先取消上一轮注册的闹钟再重排：删除/修改待办后，旧提醒才不会残留误响。
+     */
     public static void scheduleReminders(Context c) {
+        AlarmManager am = am(c);
+        cancelScheduled(c, am);
         List<Todo> todos = Store.loadTodosCache(c);
         long now = System.currentTimeMillis();
         long horizon = now + 24L * 3600000L;
+        JSONArray codes = new JSONArray();
         int count = 0;
         for (int i = 0; i < todos.size() && count < MAX_REMINDERS; i++) {
             Todo t = todos.get(i);
@@ -78,16 +86,37 @@ public final class AlarmScheduler {
                 if (fireAt <= now + 10000) continue;
                 String key = t.id + ":" + occ;
                 if (Prefs.isNotified(c, key)) continue;
+                int code = reqCode(occ, t.title);
                 Intent intent = new Intent(c, AlarmReceiver.class);
                 intent.setAction(ACTION_FIRE);
                 intent.putExtra("title", t.title);
                 intent.putExtra("occ", occ);
                 intent.putExtra("key", key);
                 intent.putExtra("sound", Prefs.getBool(c, Prefs.K_SOUND, true));
-                PendingIntent pi = PendingIntent.getBroadcast(c, reqCode(occ, t.title), intent, 0);
-                am(c).set(AlarmManager.RTC_WAKEUP, fireAt, pi);
+                PendingIntent pi = PendingIntent.getBroadcast(c, code, intent, 0);
+                am.set(AlarmManager.RTC_WAKEUP, fireAt, pi);
+                codes.put(code);
                 count++;
             }
+        }
+        Prefs.put(c, Prefs.K_SCHEDULED, codes.toString());
+    }
+
+    /** 取消上一轮注册到系统的提醒闹钟（记录的是 requestCode 列表） */
+    private static void cancelScheduled(Context c, AlarmManager am) {
+        String s = Prefs.get(c, Prefs.K_SCHEDULED, "");
+        if (s == null || s.length() < 2) return;
+        try {
+            JSONArray arr = new JSONArray(s);
+            for (int i = 0; i < arr.length(); i++) {
+                int code = arr.optInt(i, -1);
+                if (code < 0) continue;
+                Intent intent = new Intent(c, AlarmReceiver.class);
+                intent.setAction(ACTION_FIRE);
+                PendingIntent pi = PendingIntent.getBroadcast(c, code, intent, PendingIntent.FLAG_NO_CREATE);
+                if (pi != null) am.cancel(pi);
+            }
+        } catch (Exception ignored) {
         }
     }
 
