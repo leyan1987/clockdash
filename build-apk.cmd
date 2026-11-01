@@ -14,16 +14,18 @@ echo [1/3] Sync source to %DST% ...
 robocopy "%SRC%" "%DST%" /MIR /XD build .gradle >nul
 if errorlevel 8 ( echo Sync failed & exit /b 1 )
 
-echo [2/3] Building release APK (first run downloads dependencies) ...
+echo [2/3] Building legacy + modern APKs (first run downloads dependencies) ...
 pushd "%DST%"
-call "%GRADLE%" assembleRelease --no-daemon
+call "%GRADLE%" assembleLegacyRelease assembleModernRelease --no-daemon
 if errorlevel 1 ( popd & echo Build FAILED & exit /b 1 )
 popd
 
-echo [3/3] Copy APK back ...
+echo [3/3] Copy APKs back ...
 if not exist "%SCRIPT_DIR%dist" mkdir "%SCRIPT_DIR%dist"
-copy /y "%DST%\app\build\outputs\apk\release\app-release.apk" "%SCRIPT_DIR%dist\ClockDash-latest.apk" >nul
-del /q "%SCRIPT_DIR%dist\ClockDash-v1.0.apk" "%SCRIPT_DIR%dist\ClockDash-v1.5.apk" 2>nul
+copy /y "%DST%\app\build\outputs\apk\legacy\release\app-legacy-release.apk" "%SCRIPT_DIR%dist\ClockDash-legacy.apk" >nul
+copy /y "%DST%\app\build\outputs\apk\modern\release\app-modern-release.apk" "%SCRIPT_DIR%dist\ClockDash-modern.apk" >nul
+del /q "%SCRIPT_DIR%dist\ClockDash-latest.apk" 2>nul
 echo.
-echo DONE: %SCRIPT_DIR%dist\ClockDash-latest.apk (version inside app)
+echo DONE: %SCRIPT_DIR%dist\ClockDash-legacy.apk  (old tablets/TV, Android 4.0.3+)
+echo DONE: %SCRIPT_DIR%dist\ClockDash-modern.apk (modern 64-bit phones/tablets, Android 5.0+)
 endlocal

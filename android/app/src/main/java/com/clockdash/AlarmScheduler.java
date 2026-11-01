@@ -1,9 +1,13 @@
 package com.clockdash;
 
 import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 
 import org.json.JSONArray;
 
@@ -28,10 +32,36 @@ public final class AlarmScheduler {
 
     private AlarmScheduler() {}
 
+    /** 通知渠道（Android 8.0+ 必需；老系统自动走旧路径） */
+    public static final String CHANNEL_ID = "clockdash_alarms";
+
+    public static void ensureChannel(Context c) {
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "日程提醒",
+                    NotificationManager.IMPORTANCE_HIGH);
+            ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE))
+                    .createNotificationChannel(ch);
+        }
+    }
+
+    /** PendingIntent 不可变标志：Android 12 (API 31) 起必须显式声明 */
+    public static int piFlags() {
+        return Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0;
+    }
+
+    /** 精确闹钟兼容：Android 12+ 用户可能收回精确闹钟权限，此时退化为近似闹钟 */
+    private static void setExactCompat(Context c, AlarmManager am, long triggerAt, PendingIntent pi) {
+        if (Build.VERSION.SDK_INT >= 31 && !am.canScheduleExactAlarms()) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi);
+        } else {
+            am.set(AlarmManager.RTC_WAKEUP, triggerAt, pi);
+        }
+    }
+
     private static PendingIntent op(Context c, String action, int req) {
         Intent i = new Intent(c, AlarmReceiver.class);
         i.setAction(action);
-        return PendingIntent.getBroadcast(c, req, i, 0);
+        return PendingIntent.getBroadcast(c, req, i, piFlags());
     }
 
     /**
@@ -93,8 +123,8 @@ public final class AlarmScheduler {
                 intent.putExtra("occ", occ);
                 intent.putExtra("key", key);
                 intent.putExtra("sound", Prefs.getBool(c, Prefs.K_SOUND, true));
-                PendingIntent pi = PendingIntent.getBroadcast(c, code, intent, 0);
-                am.set(AlarmManager.RTC_WAKEUP, fireAt, pi);
+                PendingIntent pi = PendingIntent.getBroadcast(c, code, intent, piFlags());
+                setExactCompat(c, am(c), fireAt, pi);
                 codes.put(code);
                 count++;
             }
@@ -129,8 +159,8 @@ public final class AlarmScheduler {
         intent.putExtra("occ", at);
         intent.putExtra("key", "snooze:" + at);
         intent.putExtra("sound", sound);
-        PendingIntent pi = PendingIntent.getBroadcast(c, reqCode(at, title), intent, 0);
-        am(c).set(AlarmManager.RTC_WAKEUP, at, pi);
+        PendingIntent pi = PendingIntent.getBroadcast(c, reqCode(at, title), intent, piFlags());
+        setExactCompat(c, am(c), at, pi);
     }
 
     private static long nextMidnight() {

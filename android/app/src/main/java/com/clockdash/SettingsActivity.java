@@ -109,7 +109,8 @@ public class SettingsActivity extends Activity {
             android.content.pm.PackageInfo pi = getPackageManager()
                     .getPackageInfo(getPackageName(), 0);
             ((TextView) findViewById(R.id.tvVersion)).setText(
-                    "ClockDash v" + pi.versionName + " (" + pi.versionCode + ")");
+                    "ClockDash v" + pi.versionName + " (" + pi.versionCode + ") · "
+                            + getString(R.string.app_flavor));
         } catch (Exception ignored) {
         }
     }
@@ -139,7 +140,10 @@ public class SettingsActivity extends Activity {
         Prefs.putBool(this, Prefs.K_SOUND, cbSound.isChecked());
         Prefs.putBool(this, Prefs.K_STAY_ON, cbStayOn.isChecked());
         Prefs.putBool(this, Prefs.K_AUTO_BOOT, cbAutoBoot.isChecked());
-        Prefs.applyStayOn(this, cbStayOn.isChecked());
+        // 现代 Android 需要用户在系统设置里授予“修改系统设置”权限
+        if (cbStayOn.isChecked() && !Prefs.applyStayOn(this, true)) {
+            Toast.makeText(this, "未授予“修改系统设置”权限，请在系统设置中手动允许", Toast.LENGTH_LONG).show();
+        }
         AlarmScheduler.schedulePeriodic(this);
     }
 

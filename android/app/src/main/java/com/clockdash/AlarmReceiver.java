@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.PowerManager;
 
 import org.json.JSONObject;
@@ -31,7 +32,11 @@ public class AlarmReceiver extends BroadcastReceiver {
             ri.putExtra("occ", occ);
             ri.putExtra("sound", sound);
             ri.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
-            context.startActivity(ri);
+            try {
+                context.startActivity(ri);
+            } catch (Exception ignored) {
+                // 现代 Android 限制后台拉起界面：此时靠全屏意图通知弹出提醒
+            }
             return;
         }
 
@@ -115,21 +120,28 @@ public class AlarmReceiver extends BroadcastReceiver {
 
     private void postNotification(Context c, String title, long occ, boolean sound) {
         try {
+            AlarmScheduler.ensureChannel(c);
             Intent ri = new Intent(c, ReminderActivity.class);
             ri.putExtra("title", title);
             ri.putExtra("occ", occ);
             ri.putExtra("sound", sound);
             int id = AlarmScheduler.reqCode(occ, title);
-            PendingIntent pi = PendingIntent.getActivity(c, id, ri, 0);
-            Notification.Builder b = new Notification.Builder(c);
+            PendingIntent pi = PendingIntent.getActivity(c, id, ri, AlarmScheduler.piFlags());
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(c, AlarmScheduler.CHANNEL_ID)
+                    : new Notification.Builder(c);
             b.setSmallIcon(android.R.drawable.ic_lock_idle_alarm);
             b.setWhen(System.currentTimeMillis());
             b.setAutoCancel(true);
             b.setContentTitle("日程提醒");
             b.setContentText(title == null ? "" : title);
             b.setContentIntent(pi);
+            if (Build.VERSION.SDK_INT >= 29) {
+                // 现代 Android 禁止后台拉起界面：用全屏意图弹出提醒界面
+                b.setFullScreenIntent(pi, true);
+            }
             // 声音由弹出的提醒界面负责，这里保持静音避免重复响铃
-            Notification n = b.getNotification();
+            Notification n = Build.VERSION.SDK_INT >= 16 ? b.build() : b.getNotification();
             ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE)).notify(id, n);
         } catch (Exception ignored) {
         }

@@ -8,8 +8,23 @@ android {
         applicationId 'com.clockdash'
         minSdkVersion 15      // Android 4.0.3 (RK2918 平板)
         targetSdkVersion 15   // 老系统保持老行为：精确闹钟、无后台限制
-        versionCode 11        // 每次出包递增，便于在 设置→应用→时钟看板 里确认版本
-        versionName '1.11'
+        versionCode 12        // 每次出包递增，便于在 设置→应用→时钟看板 里确认版本
+        versionName '1.12'
+    }
+
+    // 双版本：legacy 给老平板/电视/机顶盒；modern 给 64 位现代手机/平板
+    flavorDimensions "device"
+    productFlavors {
+        legacy {
+            dimension "device"
+            resValue "string", "app_flavor", "legacy"
+        }
+        modern {
+            dimension "device"
+            minSdkVersion 21       // Android 5.0+，覆盖所有 64 位设备
+            targetSdkVersion 31    // 现代合规：通知渠道/PendingIntent不可变/精确闹钟
+            resValue "string", "app_flavor", "modern"
+        }
     }
 
     buildTypes {
