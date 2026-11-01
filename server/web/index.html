@@ -193,12 +193,13 @@
     <div id="userList"></div>
     <label>用户名（2-32 位字母数字下划线）</label><input id="nuName" placeholder="例如：father">
     <label>口令（至少 6 位）</label><input id="nuPass" type="password" placeholder="新口令">
+    <label>绑定设备（该用户登录后只能管理这一台平板）</label><select id="nuDev"></select>
     <div class="btnrow">
       <button id="btnUserAdd">＋ 添加用户</button>
       <button id="btnUserPass">修改口令</button>
       <button id="btnUserDel">删除用户</button>
     </div>
-    <div class="hint">所有用户管理同一份待办（平板只显示一份）。admin 为内置管理员，不可删除。</div>
+    <div class="hint">普通用户与其绑定的设备一一对应，看不到其他设备。admin 为内置管理员，不可删除。</div>
   </section>
 </main>
 
@@ -221,9 +222,9 @@
   function setDirty(d) {
     dirty = d; $("dirty").className = "dirty" + (d ? " show" : "");
   }
-  /* 设备级接口补 devid（设备口令模式由服务器自动解析，无需 devid） */
+  /* 设备级接口补 devid：管理员指定目标设备；普通用户由服务端强制绑定设备 */
   function dp(path) {
-    if (auth.mode !== "session") return path;
+    if (auth.mode !== "session" || auth.role !== "admin") return path;
     return path + (path.indexOf("?") >= 0 ? "&" : "?") + "devid=" + encodeURIComponent(curDev);
   }
   function api(path, method, body) {
@@ -446,10 +447,16 @@
   function loadDevices() {
     return api("/api/devices").then(function (j) {
       devList = j.devices || [];
-      if (!devList.some(function (d) { return d.id === curDev; })) {
-        curDev = devList.length ? devList[0].id : "default";
+      if (auth.role === "admin") {
+        if (!devList.some(function (d) { return d.id === curDev; })) {
+          curDev = devList.length ? devList[0].id : "default";
+          localStorage.setItem("cd_dev", curDev);
+        }
+      } else if (devList.length) {
+        curDev = devList[0].id; // 普通用户锁定绑定设备
         localStorage.setItem("cd_dev", curDev);
       }
+      var isAdmin = auth.role === "admin";
       var sel = $("devSel");
       sel.innerHTML = "";
       for (var i = 0; i < devList.length; i++) {
@@ -459,14 +466,24 @@
         sel.appendChild(o);
       }
       sel.value = curDev;
-      $("devOps").style.display = auth.role === "admin" ? "flex" : "none";
+      sel.style.display = isAdmin ? "block" : "none";
+      $("devOps").style.display = isAdmin ? "flex" : "none";
       var cur = null;
       for (var k = 0; k < devList.length; k++) if (devList[k].id === curDev) cur = devList[k];
-      $("devHint").textContent = cur
-        ? (auth.role === "admin"
-          ? "「" + (cur.name || cur.id) + "」的设备口令：" + cur.token + "（在平板设置里配置这台设备时用）"
-          : "当前正在管理：" + (cur.name || cur.id))
-        : "";
+      $("devHint").textContent = isAdmin
+        ? (cur ? "「" + (cur.name || cur.id) + "」的设备口令：" + cur.token + "（在平板设置里配置这台设备时用）" : "")
+        : (cur ? "您绑定的设备：" + (cur.name || cur.id) + "（只能管理这一台）" : "");
+      // 用户表单的绑定设备下拉
+      var nu = $("nuDev");
+      if (nu) {
+        nu.innerHTML = "";
+        for (var n = 0; n < devList.length; n++) {
+          var o2 = document.createElement("option");
+          o2.value = devList[n].id;
+          o2.textContent = devList[n].name || devList[n].id;
+          nu.appendChild(o2);
+        }
+      }
     }).catch(function (e) { $("devHint").textContent = "设备列表加载失败：" + e.message; });
   }
   $("devSel").addEventListener("change", function () {
@@ -480,7 +497,7 @@
     if (!name) return;
     api("/api/devices", "POST", { action: "add", name: name })
       .then(function (j) {
-        toast("设备已添加，口令：" + j.token, 6000);
+        toast("设备已添加，口令：" + j.token + "（请记下，配新平板时用）", 6000);
         curDev = j.id; localStorage.setItem("cd_dev", curDev);
         return loadDevices().then(loadData);
       })
@@ -597,8 +614,10 @@
       var html = "";
       for (var i = 0; i < j.users.length; i++) {
         var u = j.users[i];
+        var devName = "";
+        for (var k = 0; k < devList.length; k++) if (devList[k].id === u.device) devName = devList[k].name || devList[k].id;
         html += '<div class="todo"><div class="t-main"><div class="t-title">' + esc(u.username)
-          + (u.role === "admin" ? ' <span class="hint">管理员</span>' : ' <span class="hint">用户</span>')
+          + (u.role === "admin" ? ' <span class="hint">管理员</span>' : ' <span class="hint">用户 · ' + esc(devName || u.device || "未绑定") + '</span>')
           + '</div></div><div class="t-ops"><button class="mini" data-u="' + esc(u.username) + '" data-a="pass">改密</button>'
           + (u.username === "admin" ? "" : '<button class="mini" data-u="' + esc(u.username) + '" data-a="del">删除</button>')
           + '</div></div>';
@@ -607,8 +626,8 @@
     }).catch(function (e) { $("userList").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
   }
   $("btnUserAdd").addEventListener("click", function () {
-    api("/api/users", "POST", { action: "add", username: $("nuName").value.trim(), password: $("nuPass").value })
-      .then(function () { toast("已添加 ✓"); renderUsers(); })
+    api("/api/users", "POST", { action: "add", username: $("nuName").value.trim(), password: $("nuPass").value, device: $("nuDev").value })
+      .then(function () { toast("已添加 ✓，该用户只能管理其绑定的设备"); renderUsers(); })
       .catch(function (e) { toast(e.message, 3500); });
   });
   $("btnUserPass").addEventListener("click", function () {

@@ -71,6 +71,16 @@ def ensure_data():
         # 初始用户：admin 的口令绑定为当前设备口令
         u = hash_password(read_token())
         save_users({"users": [{"username": "admin", "role": "admin", **u}]})
+    else:
+        # 迁移：普通用户补设备绑定字段（历史数据统一绑到默认设备）
+        us = load_users()
+        changed = False
+        for u in us["users"]:
+            if u.get("role") == "user" and not u.get("device"):
+                u["device"] = "default"
+                changed = True
+        if changed:
+            save_users(us)
     if not os.path.exists(STATE_FILE):
         atomic_write(STATE_FILE, json.dumps({"todo_rev": 0}))
     if not os.path.exists(TODOS_FILE):
@@ -522,9 +532,16 @@ class Handler(SimpleHTTPRequestHandler):
         return None
 
     def _resolve_dev(self, a):
-        """确定请求针对的设备：设备口令自动解析；会话模式取 ?devid="""
+        """确定请求针对的设备。
+        设备口令：按口令解析；普通用户：服务端强制为其绑定的设备（不信任传参）；
+        管理员：取 ?devid= 参数。"""
         if a.get("mode") == "device":
             return a.get("dev")
+        if a.get("role") == "user":
+            for u in load_users()["users"]:
+                if u.get("username") == a.get("user"):
+                    return u.get("device") or "default"
+            return None
         qs = parse_qs(urlparse(self.path).query)
         devid = (qs.get("devid") or [""])[0]
         if device_by_id(devid):
@@ -568,7 +585,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json({"error": "口令至少 6 位"}, 400)
             role = doc.get("role") if doc.get("role") in ("admin", "user") else "user"
             u = hash_password(password)
-            users["users"].append({"username": username, "role": role, **u})
+            entry = {"username": username, "role": role, **u}
+            if role == "user":
+                # 普通用户必须绑定一台设备，登录后只能管理这一台
+                devid = str(doc.get("device", "")).strip()
+                if device_by_id(devid) is None:
+                    return self._send_json({"error": "请为该用户选择要绑定的设备"}, 400)
+                entry["device"] = devid
+            users["users"].append(entry)
         elif act == "passwd":
             if idx < 0:
                 return self._send_json({"error": "用户不存在"}, 404)
@@ -614,15 +638,20 @@ class Handler(SimpleHTTPRequestHandler):
                     return self._send_json({"error": "需要管理员权限"}, 403)
                 return self._send_json({"ok": True,
                                         "users": [{"username": u.get("username"),
-                                                   "role": u.get("role", "user")}
+                                                   "role": u.get("role", "user"),
+                                                   "device": u.get("device", "")}
                                                   for u in load_users()["users"]]})
             if p == "/api/devices":
                 devs = load_devices()["devices"]
                 if a.get("role") != "admin":
-                    # 普通用户给名字即可（用于切换管理目标），口令仅管理员可见
+                    # 普通用户只能看到自己绑定的那一台设备（不含口令）
+                    me = next((u for u in load_users()["users"]
+                               if u.get("username") == a.get("user")), None)
+                    mydev = (me.get("device", "default") if me else "default")
+                    mine = [d for d in devs if d["id"] == mydev]
                     return self._send_json({"ok": True,
                                             "devices": [{"id": d["id"], "name": d.get("name", "")}
-                                                        for d in devs]})
+                                                        for d in mine]})
                 return self._send_json({"ok": True,
                                         "devices": [{"id": d["id"], "name": d.get("name", ""),
                                                      "token": d.get("token", "")} for d in devs]})
@@ -745,6 +774,11 @@ class Handler(SimpleHTTPRequestHandler):
         elif act == "del":
             if len(devices) <= 1:
                 return self._send_json({"error": "至少保留一台设备"}, 400)
+            # 有用户绑定此设备时禁止删除，避免用户失去管理目标
+            bound = [u for u in load_users()["users"] if u.get("device") == devid]
+            if bound:
+                return self._send_json({"error": "用户 " + ", ".join(u["username"] for u in bound)
+                                        + " 绑定在此设备上，请先删除或转移这些用户"}, 400)
             devices = [d for d in devices if d.get("id") != devid]
         else:
             return self._send_json({"error": "未知操作"}, 400)
