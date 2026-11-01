@@ -77,6 +77,11 @@ public final class Store {
         if (s == null) return null;
         List<Todo> l = parseTodos(s);
         if (l == null) return null;
+        // 记录数据版本号，供 /api/check 轻量推送比对
+        try {
+            Prefs.put(c, Prefs.K_TODO_REV, String.valueOf(new org.json.JSONObject(s).optInt("rev", 0)));
+        } catch (Exception ignored) {
+        }
         writePrivate(c, TODOS_CACHE, s);
         return l;
     }

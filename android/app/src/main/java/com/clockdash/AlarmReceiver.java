@@ -9,6 +9,8 @@ import android.content.Intent;
 import android.os.AsyncTask;
 import android.os.PowerManager;
 
+import org.json.JSONObject;
+
 /** 闹钟与同步的接收器 */
 public class AlarmReceiver extends BroadcastReceiver {
 
@@ -36,6 +38,45 @@ public class AlarmReceiver extends BroadcastReceiver {
         if (AlarmScheduler.ACTION_ROLLOVER.equals(action)) {
             // 跨天：重排提醒（周期闹钟本身会自动续）
             AlarmScheduler.scheduleReminders(context);
+            return;
+        }
+
+        if (AlarmScheduler.ACTION_CHECK.equals(action)) {
+            // 轻量推送检查：只拉版本号，有变化才做完整同步
+            acquireLock(context);
+            final Context app = context.getApplicationContext();
+            new AsyncTask<Void, Void, Boolean>() {
+                @Override
+                protected Boolean doInBackground(Void... params) {
+                    String base = Store.serverBase(app);
+                    if (base == null) return Boolean.FALSE;
+                    String s = HttpUtil.get(base + "/api/check",
+                            Prefs.get(app, Prefs.K_TOKEN, ""), 8000);
+                    if (s == null) return Boolean.FALSE;
+                    try {
+                        JSONObject o = new JSONObject(s);
+                        if (!o.optBoolean("ok", false)) return Boolean.FALSE;
+                        boolean changed = o.optInt("todo_rev", 0) != Prefs.getInt(app, Prefs.K_TODO_REV, 0)
+                                || o.optInt("config_rev", 0) != Prefs.getInt(app, Prefs.K_REV, 0);
+                        if (!changed) return Boolean.FALSE;
+                        Store.fetchTodos(app);
+                        Store.fetchConfigPush(app);
+                        Store.fetchHolidays(app);
+                        return Boolean.TRUE;
+                    } catch (Exception e) {
+                        return Boolean.FALSE;
+                    }
+                }
+
+                @Override
+                protected void onPostExecute(Boolean changed) {
+                    try {
+                        if (changed) AlarmScheduler.schedulePeriodic(app);
+                    } finally {
+                        releaseLock();
+                    }
+                }
+            }.execute();
             return;
         }
 

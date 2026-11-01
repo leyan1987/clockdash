@@ -16,10 +16,12 @@ public final class AlarmScheduler {
     public static final String ACTION_SYNC = "com.clockdash.action.SYNC";
     public static final String ACTION_WX = "com.clockdash.action.WX";
     public static final String ACTION_ROLLOVER = "com.clockdash.action.ROLLOVER";
+    public static final String ACTION_CHECK = "com.clockdash.action.CHECK";
 
     private static final int REQ_SYNC = 1;
     private static final int REQ_WX = 2;
     private static final int REQ_ROLLOVER = 3;
+    private static final int REQ_CHECK = 4;
     private static final int MAX_REMINDERS = 60;
 
     private AlarmScheduler() {}
@@ -42,17 +44,20 @@ public final class AlarmScheduler {
         return (AlarmManager) c.getSystemService(Context.ALARM_SERVICE);
     }
 
-    /** 设置周期同步闹钟（开机 / 设置变更 / 打开应用时调用） */
+    /** 设置周期闹钟（开机 / 设置变更 / 打开应用时调用） */
     public static void schedulePeriodic(Context c) {
         long now = System.currentTimeMillis();
-        int todoMin = Math.max(1, Prefs.getInt(c, Prefs.K_TODO_MIN, 10));
-        int wxMin = Math.max(5, Prefs.getInt(c, Prefs.K_WX_MIN, 30));
+        int todoMin = Math.max(1, Prefs.getInt(c, Prefs.K_TODO_MIN, 60));
+        int wxMin = Math.max(5, Prefs.getInt(c, Prefs.K_WX_MIN, 60));
         am(c).setRepeating(AlarmManager.RTC_WAKEUP, now + 4000,
                 todoMin * 60000L, op(c, ACTION_SYNC, REQ_SYNC));
         am(c).setRepeating(AlarmManager.RTC_WAKEUP, now + 15000,
                 wxMin * 60000L, op(c, ACTION_WX, REQ_WX));
         am(c).setRepeating(AlarmManager.RTC_WAKEUP, nextMidnight() + 120000L,
                 86400000L, op(c, ACTION_ROLLOVER, REQ_ROLLOVER));
+        // 轻量推送检查：每分钟一个几十字节的版本号请求，后台一保存约 1 分钟内就同步
+        am(c).setRepeating(AlarmManager.RTC_WAKEUP, now + 30000,
+                60000L, op(c, ACTION_CHECK, REQ_CHECK));
         scheduleReminders(c);
     }
 

@@ -154,11 +154,11 @@
     <div class="linecheck"><input type="checkbox" id="pNightOnly"><label for="pNightOnly" style="margin:0;color:var(--fg)">夜间只显示时钟（更暗、更省眼）</label></div>
     <div class="linecheck"><input type="checkbox" id="pSound"><label for="pSound" style="margin:0;color:var(--fg)">提醒时播放铃声并震动</label></div>
     <div class="row">
-      <div><label>待办刷新间隔（分钟）</label><input type="number" id="pTodosMin" min="1" value="10"></div>
-      <div><label>天气刷新间隔（分钟）</label><input type="number" id="pWxMin" min="5" value="30"></div>
+      <div><label>待办刷新间隔（分钟）</label><input type="number" id="pTodosMin" min="1" value="60"></div>
+      <div><label>天气刷新间隔（分钟）</label><input type="number" id="pWxMin" min="5" value="60"></div>
     </div>
     <div class="btnrow"><button class="primary" id="btnPush">推送到平板</button></div>
-    <div class="hint">推送后平板会在下一次同步时自动应用（服务器地址和口令不受影响）。</div>
+    <div class="hint">推送后平板约 1 分钟内自动应用（服务器地址和口令不受影响）。后台保存待办后同样约 1 分钟内推送到平板，无需等整点同步。</div>
   </section>
 
   <!-- ============ 平板基本配置 ============ -->
@@ -412,7 +412,7 @@
       $("pCity").value = c.city || ""; $("pNightStart").value = c.night_start || "22:30";
       $("pNightEnd").value = c.night_end || "06:30"; $("pNightOnly").checked = !!c.night_clock_only;
       $("pSound").checked = c.remind_sound !== false;
-      $("pTodosMin").value = c.todos_min || 10; $("pWxMin").value = c.weather_min || 30;
+      $("pTodosMin").value = c.todos_min || 60; $("pWxMin").value = c.weather_min || 60;
       $("pAmapKey").value = c.amap_key || "";
       adcode = c.adcode || ""; setHintAdcode(adcode ? adcode + " ✓" : "");
       if (c.lat && c.lon) { geo.lat = c.lat; geo.lon = c.lon; setHintGeo(c.lat, c.lon); }

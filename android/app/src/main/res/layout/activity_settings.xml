@@ -44,8 +44,8 @@
 
         <TextView style="@style/SecTitle" android:text="刷新间隔（分钟）" />
         <LinearLayout style="@style/BtnRow">
-            <EditText android:id="@+id/etTodoMin" style="@style/Et" android:layout_weight="1" android:hint="待办 10" android:inputType="number" />
-            <EditText android:id="@+id/etWxMin" style="@style/Et" android:layout_weight="1" android:hint="天气 30" android:inputType="number" />
+            <EditText android:id="@+id/etTodoMin" style="@style/Et" android:layout_weight="1" android:hint="待办 60" android:inputType="number" />
+            <EditText android:id="@+id/etWxMin" style="@style/Et" android:layout_weight="1" android:hint="天气 60" android:inputType="number" />
         </LinearLayout>
 
         <TextView style="@style/SecTitle" android:text="屏幕常亮" />

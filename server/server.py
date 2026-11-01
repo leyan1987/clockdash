@@ -11,6 +11,7 @@
   POST /api/config   保存推送配置，rev 自动 +1（需口令）
   GET  /api/weather  天气（服务器代理高德/Open-Meteo，带缓存，需口令）
   GET  /api/holidays 法定节假日/调休（代理 holiday-cn，每日缓存，需口令）
+  GET  /api/check    数据版本号检查（轻量推送轮询，需口令）
 
 用法：
   python server.py [端口]        默认端口 8765
@@ -34,6 +35,7 @@ TOKEN_FILE = os.path.join(DATA_DIR, "server-token.txt")
 TODOS_FILE = os.path.join(DATA_DIR, "todos.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "app-config.json")
 HOLIDAY_CACHE_FILE = os.path.join(DATA_DIR, "holiday-cache.json")
+STATE_FILE = os.path.join(DATA_DIR, "state.json")
 
 REPEATS = ("none", "hourly", "daily", "weekly", "monthly", "yearly")
 
@@ -43,9 +45,11 @@ def ensure_data():
     if not os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             f.write(secrets.token_hex(4).upper())
+    if not os.path.exists(STATE_FILE):
+        atomic_write(STATE_FILE, json.dumps({"todo_rev": 0}))
     if not os.path.exists(TODOS_FILE):
         sample = {
-            "version": 1,
+            "version": 1, "rev": 0,
             "todos": [
                 {"id": "t1", "title": "欢迎使用时钟看板，在设置页编辑我", "date": "2026-11-01",
                  "time": "09:00", "remind": 0, "repeat": "none"},
@@ -56,8 +60,27 @@ def ensure_data():
         cfg = {"rev": 0, "city": "", "lat": 0.0, "lon": 0.0,
                "night_start": "22:30", "night_end": "06:30",
                "night_clock_only": False, "remind_sound": True,
-               "todos_min": 10, "weather_min": 30}
+               "todos_min": 60, "weather_min": 60}
         atomic_write(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
+    else:
+        # 迁移：旧版默认同步过快，统一调整为每小时
+        cfg = load_json(CONFIG_FILE, {})
+        changed = False
+        try:
+            if int(cfg.get("todos_min", 60) or 60) < 60:
+                cfg["todos_min"] = 60
+                changed = True
+        except (TypeError, ValueError):
+            pass
+        try:
+            if int(cfg.get("weather_min", 60) or 60) < 60:
+                cfg["weather_min"] = 60
+                changed = True
+        except (TypeError, ValueError):
+            pass
+        if changed:
+            atomic_write(CONFIG_FILE, json.dumps(cfg, ensure_ascii=False, indent=2))
+            print("* 已将待办/天气刷新间隔调整为每小时（可通过设置页推送修改）")
 
 
 def read_token():
@@ -78,6 +101,14 @@ def atomic_write(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(tmp, path)
+
+
+def get_todo_rev():
+    st = load_json(STATE_FILE, {"todo_rev": 0})
+    try:
+        return int(st.get("todo_rev", 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def validate_todos(doc):
@@ -316,7 +347,8 @@ class Handler(SimpleHTTPRequestHandler):
     # ---------- 路由 ----------
     def do_GET(self):
         p = urlparse(self.path).path
-        if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather", "/api/holidays"):
+        if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
+                 "/api/holidays", "/api/check"):
             if not self._check():
                 return self._send_json({"error": "口令错误"}, 401)
             if p == "/api/todos":
@@ -327,6 +359,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json(get_weather())
             if p == "/api/holidays":
                 return self._send_json(get_holidays())
+            if p == "/api/check":
+                cfg = load_json(CONFIG_FILE, {})
+                return self._send_json({"ok": True,
+                                        "todo_rev": get_todo_rev(),
+                                        "config_rev": int(cfg.get("rev", 0) or 0)})
             return self._send_json({"ok": True})
         if p == "/":
             p = "/index.html"
@@ -342,8 +379,12 @@ class Handler(SimpleHTTPRequestHandler):
             n = int(self.headers.get("Content-Length", 0) or 0)
             doc = json.loads(self.rfile.read(n).decode("utf-8"))
             if p == "/api/todos":
-                atomic_write(TODOS_FILE, json.dumps(validate_todos(doc), ensure_ascii=False, indent=2))
-                return self._send_json({"ok": True})
+                out = validate_todos(doc)
+                rev = get_todo_rev() + 1
+                out["rev"] = rev
+                atomic_write(STATE_FILE, json.dumps({"todo_rev": rev}))
+                atomic_write(TODOS_FILE, json.dumps(out, ensure_ascii=False, indent=2))
+                return self._send_json({"ok": True, "rev": rev})
             cfg = load_json(CONFIG_FILE, {})
             for k in ("city", "lat", "lon", "night_start", "night_end",
                       "night_clock_only", "remind_sound", "todos_min", "weather_min",

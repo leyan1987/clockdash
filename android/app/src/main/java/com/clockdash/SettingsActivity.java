@@ -53,8 +53,8 @@ public class SettingsActivity extends Activity {
         etLon.setText(Prefs.get(this, Prefs.K_LON, ""));
         etNightStart.setText(Prefs.get(this, Prefs.K_NIGHT_START, "22:30"));
         etNightEnd.setText(Prefs.get(this, Prefs.K_NIGHT_END, "06:30"));
-        etTodoMin.setText(String.valueOf(Prefs.getInt(this, Prefs.K_TODO_MIN, 10)));
-        etWxMin.setText(String.valueOf(Prefs.getInt(this, Prefs.K_WX_MIN, 30)));
+        etTodoMin.setText(String.valueOf(Prefs.getInt(this, Prefs.K_TODO_MIN, 60)));
+        etWxMin.setText(String.valueOf(Prefs.getInt(this, Prefs.K_WX_MIN, 60)));
         cbNightOnly.setChecked(Prefs.getBool(this, Prefs.K_NIGHT_ONLY, false));
         cbSound.setChecked(Prefs.getBool(this, Prefs.K_SOUND, true));
         cbStayOn.setChecked(Prefs.getBool(this, Prefs.K_STAY_ON, true));

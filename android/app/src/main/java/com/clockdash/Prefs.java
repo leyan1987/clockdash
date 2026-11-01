@@ -20,6 +20,7 @@ public final class Prefs {
     public static final String K_WX_MIN = "weather_min";
     public static final String K_NOTIFIED = "notified_keys";
     public static final String K_REV = "config_rev";
+    public static final String K_TODO_REV = "todo_rev";
     public static final String K_STAY_ON = "stay_on_plugged";
 
     private static final String NAME = "clockdash";
