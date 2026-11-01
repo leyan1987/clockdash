@@ -87,24 +87,41 @@ public class DashboardActivity extends Activity {
                 String hm = HM_FMT.format(now.getTime());
                 if (!hm.contentEquals(tvClock.getText())) {
                     tvClock.setText(hm);
-                    tvDate.setText(dateLine(now));
+                    try {
+                        tvDate.setText(dateLine(now));
+                    } catch (Exception e) {
+                        Log.e(TAG, "dateLine", e);
+                    }
                     String key = DAY_KEY_FMT.format(now.getTime());
                     if (!key.equals(mDayKey)) {
                         mDayKey = key;
-                        refreshAll(false);
-                        // 离线（无服务器数据）时也必须跨天重绘日历和列表
-                        buildCalendar(now);
+                        try {
+                            refreshAll(false);
+                            // 离线（无服务器数据）时也必须跨天重绘日历和列表
+                            buildCalendar(now);
+                        } catch (Exception e) {
+                            Log.e(TAG, "day-rollover", e);
+                        }
                     }
                     // 每分钟重排待办列表：条目过点后自动跳到下一次发生
-                    buildTodoRows();
+                    try {
+                        buildTodoRows();
+                    } catch (Exception e) {
+                        Log.e(TAG, "buildTodoRows", e);
+                    }
                     mTickCount = 0;
                 }
                 if (++mTickCount % 30 == 0) {
-                    applyNight(now);
-                    refreshAll(false);
-                    buildTodoRows(); // 双保险：即使分钟分支异常也每 30 秒重排一次
+                    try {
+                        applyNight(now);
+                        refreshAll(false);
+                        buildTodoRows(); // 双保险：即使分钟分支异常也每 30 秒重排一次
+                    } catch (Exception e) {
+                        Log.e(TAG, "tick30", e);
+                    }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception e) {
+                Log.e(TAG, "tick", e);
             }
             mHandler.postDelayed(this, 1000);
         }
