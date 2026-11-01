@@ -22,8 +22,8 @@ popd
 
 echo [3/3] Copy APK back ...
 if not exist "%SCRIPT_DIR%dist" mkdir "%SCRIPT_DIR%dist"
-copy /y "%DST%\app\build\outputs\apk\release\app-release.apk" "%SCRIPT_DIR%dist\ClockDash-v1.5.apk" >nul
-del /q "%SCRIPT_DIR%dist\ClockDash-v1.0.apk" 2>nul
+copy /y "%DST%\app\build\outputs\apk\release\app-release.apk" "%SCRIPT_DIR%dist\ClockDash-latest.apk" >nul
+del /q "%SCRIPT_DIR%dist\ClockDash-v1.0.apk" "%SCRIPT_DIR%dist\ClockDash-v1.5.apk" 2>nul
 echo.
-echo DONE: %SCRIPT_DIR%dist\ClockDash-v1.5.apk
+echo DONE: %SCRIPT_DIR%dist\ClockDash-latest.apk (version inside app)
 endlocal

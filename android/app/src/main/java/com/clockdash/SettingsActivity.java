@@ -102,6 +102,14 @@ public class SettingsActivity extends Activity {
                 finish();
             }
         });
+
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager()
+                    .getPackageInfo(getPackageName(), 0);
+            ((TextView) findViewById(R.id.tvVersion)).setText(
+                    "ClockDash v" + pi.versionName + " (" + pi.versionCode + ")");
+        } catch (Exception ignored) {
+        }
     }
 
     @Override

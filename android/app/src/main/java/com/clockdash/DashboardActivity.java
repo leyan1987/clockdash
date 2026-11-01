@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
+import android.util.Log;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -38,6 +39,7 @@ import java.util.Locale;
  */
 public class DashboardActivity extends Activity {
 
+    private static final String TAG = "ClockDash";
     private static final String[] WD = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"};
     private static final SimpleDateFormat HM_FMT = new SimpleDateFormat("HH:mm", Locale.US);
     private static final SimpleDateFormat DAY_KEY_FMT = new SimpleDateFormat("yyyyMMdd", Locale.US);
@@ -71,6 +73,7 @@ public class DashboardActivity extends Activity {
     private int mCornerTaps = 0;
     private long mLastCornerTap = 0;
     private boolean mSyncing = false;
+    private String mVersion = "";
 
     private final Handler mHandler = new Handler();
 
@@ -97,6 +100,7 @@ public class DashboardActivity extends Activity {
                 if (++mTickCount % 30 == 0) {
                     applyNight(now);
                     refreshAll(false);
+                    buildTodoRows(); // 双保险：即使分钟分支异常也每 30 秒重排一次
                 }
             } catch (Exception ignored) {
             }
@@ -172,6 +176,12 @@ public class DashboardActivity extends Activity {
 
         // 充电常亮（系统级兜底）
         Prefs.applyStayOn(this, Prefs.getBool(this, Prefs.K_STAY_ON, true));
+
+        try {
+            mVersion = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            mVersion = "?";
+        }
     }
 
     @Override
@@ -250,19 +260,20 @@ public class DashboardActivity extends Activity {
 
     private void updateStatus() {
         long t = Store.todosCacheTime(this);
+        String ver = " · v" + mVersion;
         if (Store.serverBase(this) == null) {
-            tvStatus.setText("未配置服务器：连点右上角三次进入设置");
+            tvStatus.setText("未配置服务器：连点右上角三次进入设置" + ver);
             tvStatus.setTextColor(getResources().getColor(R.color.amber));
             return;
         }
         if (t == 0) {
-            tvStatus.setText("正在连接服务器…");
+            tvStatus.setText("正在连接服务器…" + ver);
             tvStatus.setTextColor(getResources().getColor(R.color.dim));
             return;
         }
         String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(t));
         boolean ok = System.currentTimeMillis() - t < 2L * 3600000L;
-        tvStatus.setText("同步于 " + time + (ok ? " · 服务器正常" : " · 连接失败，显示缓存"));
+        tvStatus.setText("同步于 " + time + (ok ? " · 服务器正常" : " · 连接失败，显示缓存") + ver);
         tvStatus.setTextColor(ok ? getResources().getColor(R.color.dim) : getResources().getColor(R.color.red));
     }
 
@@ -584,6 +595,7 @@ public class DashboardActivity extends Activity {
             mRows.add(new String[]{"", hint, "0", "0"});
         }
         mAdapter.notifyDataSetChanged();
+        Log.d(TAG, "重排待办 " + mRows.size() + " 行，首行=" + mRows.get(0)[0] + " " + mRows.get(0)[1]);
     }
 
     private static boolean sameDay(Calendar a, Calendar b) {
