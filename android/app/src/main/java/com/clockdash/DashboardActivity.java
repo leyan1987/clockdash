@@ -74,6 +74,8 @@ public class DashboardActivity extends Activity {
     private long mLastCornerTap = 0;
     private boolean mSyncing = false;
     private String mVersion = "";
+    /** 最近一次待办列表重排的时间（诊断用，显示在状态栏） */
+    private String mListBuiltAt = "";
 
     private final Handler mHandler = new Handler();
 
@@ -260,20 +262,21 @@ public class DashboardActivity extends Activity {
 
     private void updateStatus() {
         long t = Store.todosCacheTime(this);
-        String ver = " · v" + mVersion;
+        String extra = " · 列于 " + (mListBuiltAt.length() == 0 ? "--:--" : mListBuiltAt)
+                + " · v" + mVersion;
         if (Store.serverBase(this) == null) {
-            tvStatus.setText("未配置服务器：连点右上角三次进入设置" + ver);
+            tvStatus.setText("未配置服务器：连点右上角三次进入设置" + extra);
             tvStatus.setTextColor(getResources().getColor(R.color.amber));
             return;
         }
         if (t == 0) {
-            tvStatus.setText("正在连接服务器…" + ver);
+            tvStatus.setText("正在连接服务器…" + extra);
             tvStatus.setTextColor(getResources().getColor(R.color.dim));
             return;
         }
         String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(t));
         boolean ok = System.currentTimeMillis() - t < 2L * 3600000L;
-        tvStatus.setText("同步于 " + time + (ok ? " · 服务器正常" : " · 连接失败，显示缓存") + ver);
+        tvStatus.setText("同步于 " + time + (ok ? " · 服务器正常" : " · 连接失败，显示缓存") + extra);
         tvStatus.setTextColor(ok ? getResources().getColor(R.color.dim) : getResources().getColor(R.color.red));
     }
 
@@ -595,6 +598,7 @@ public class DashboardActivity extends Activity {
             mRows.add(new String[]{"", hint, "0", "0"});
         }
         mAdapter.notifyDataSetChanged();
+        mListBuiltAt = HM_FMT.format(new Date());
         Log.d(TAG, "重排待办 " + mRows.size() + " 行，首行=" + mRows.get(0)[0] + " " + mRows.get(0)[1]);
     }
 
