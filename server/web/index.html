@@ -151,6 +151,22 @@
     </div>
   </section>
 
+  <!-- ============ 历史待办 ============ -->
+  <section>
+    <h2>历史待办 <small id="histCount"></small></h2>
+    <div class="row">
+      <select id="hDays" style="flex:0 0 130px">
+        <option value="30">近 30 天</option>
+        <option value="90" selected>近 90 天</option>
+        <option value="365">近一年</option>
+        <option value="3650">全部</option>
+      </select>
+      <input id="hQ" placeholder="标题关键词">
+      <button class="primary" id="btnHistory" style="flex:0 0 auto">查询</button>
+    </div>
+    <div id="histList" style="margin-top:8px"><div class="hint">加载中…</div></div>
+  </section>
+
   <!-- ============ 显示设置推送 ============ -->
   <section>
     <h2>显示设置 <small>推送到平板（天气位置、夜间模式、刷新频率）</small></h2>
@@ -524,6 +540,7 @@
   function loadData() {
     api(dp("/api/todos")).then(function (j) { todos = j.todos || []; renderTodos(); })
       .catch(function (e) { toast("读取待办失败：" + e.message, 3500); });
+    loadHistory();
     api(dp("/api/config" + (auth.role === "admin" ? "?full=1" : ""))).then(function (c) {
       if (!c) return;
       $("pCity").value = c.city || ""; $("pNightStart").value = c.night_start || "22:30";
@@ -656,6 +673,31 @@
         .catch(function (er) { toast(er.message, 3500); });
     }
   });
+
+  /* ---------- 历史待办 ---------- */
+  var REP_TEXT = { none: "不重复", hourly: "每小时", daily: "每天", weekly: "每周", monthly: "每月", yearly: "每年" };
+  function loadHistory() {
+    var days = $("hDays").value;
+    var q = encodeURIComponent($("hQ").value.trim());
+    $("histList").innerHTML = '<div class="hint">查询中…</div>';
+    api(dp("/api/history?days=" + days + "&q=" + q)).then(function (j) {
+      var html = "";
+      for (var i = 0; i < j.items.length; i++) {
+        var it = j.items[i];
+        html += '<div class="todo"><div class="t-main"><div class="t-title">' + esc(it.title)
+          + (it.deleted ? ' <span class="hint">已删除</span>' : '')
+          + '</div><div class="t-meta">' + it.time + " · " + (REP_TEXT[it.repeat] || "不重复")
+          + '</div></div></div>';
+      }
+      $("histCount").textContent = "共 " + j.total + " 条，显示 " + j.items.length + " 条";
+      $("histList").innerHTML = html || '<div class="hint">该范围内没有历史记录</div>';
+    }).catch(function (e) {
+      $("histList").innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+    });
+  }
+  $("btnHistory").addEventListener("click", loadHistory);
+  $("hQ").addEventListener("keydown", function (e) { if (e.key === "Enter") loadHistory(); });
+  $("hDays").addEventListener("change", loadHistory);
 
   init();
 })();

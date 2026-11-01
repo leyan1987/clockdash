@@ -16,6 +16,7 @@
   GET  /api/weather  天气（服务器代理高德/Open-Meteo，带缓存，需口令/会话）
   GET  /api/holidays 法定节假日/调休（代理 holiday-cn，每日缓存，需口令/会话）
   GET  /api/check    数据版本号检查（轻量推送轮询，需口令/会话）
+  GET  /api/history  历史待办查询（已过期发生时刻+已删除规则归档，需口令/会话）
 
 鉴权两通道：
   设备口令 token（平板/链接直达，权限等同管理员）
@@ -38,6 +39,7 @@ import sys
 import threading
 import time
 import urllib.request
+from datetime import datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -245,6 +247,10 @@ def config_path(dev_id):
     return os.path.join(DATA_DIR, "config_%s.json" % dev_id)
 
 
+def history_path(dev_id):
+    return os.path.join(DATA_DIR, "history_%s.json" % dev_id)
+
+
 def load_json(path, default):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -316,6 +322,217 @@ def validate_todos(doc):
             item["end"] = t["end"]
         out.append(item)
     return {"version": 1, "todos": out}
+
+
+# ---------- 历史待办：与平板端 Recur.java 同语义的规则展开 ----------
+
+_HIST_CAP = 300        # 单条规则展开上限
+_HIST_ARCHIVE = 500    # 已删除规则归档条数上限
+
+
+def _month_max(y, m):
+    if m == 12:
+        nxt = datetime(y + 1, 1, 1)
+    else:
+        nxt = datetime(y, m + 1, 1)
+    return (nxt - timedelta(days=1)).day
+
+
+def _dow_mon1(c):
+    return c.isoweekday()  # 周一=1 … 周日=7
+
+
+def _week_index(c):
+    return ((c - datetime(1970, 1, 5)).days) // 7
+
+
+def expand_rule(t, frm, to):
+    """展开规则 t 在 [frm, to] 内的发生时刻（升序 datetime 列表）。
+    语义与平板端 Recur.java 一致（tests/recur_port_test.py 已对齐）。"""
+    out = []
+    date = str(t.get("date", ""))
+    tstr = str(t.get("time", ""))
+    if len(date) != 10 or len(tstr) < 4:
+        return out
+    try:
+        anchor = datetime.strptime(date, "%Y-%m-%d")
+    except ValueError:
+        return out
+    try:
+        parts = tstr.split(":")
+        hh = max(0, min(int(parts[0]), 23))
+        mm = max(0, min(int(parts[1]), 59))
+    except Exception:
+        hh = mm = 0
+    rep = t.get("repeat", "none")
+    try:
+        step = max(1, int(t.get("interval", 1) or 1))
+    except Exception:
+        step = 1
+    end_limit = None
+    if isinstance(t.get("end"), str) and len(t["end"]) == 10:
+        try:
+            end_limit = datetime.strptime(t["end"], "%Y-%m-%d") + timedelta(days=1)
+        except ValueError:
+            end_limit = None
+
+    def make(day):
+        return day.replace(hour=hh, minute=mm, second=0, microsecond=0)
+
+    def add(occ):
+        if occ < frm or occ > to:
+            return True
+        if end_limit is not None and occ >= end_limit:
+            return False
+        out.append(occ)
+        return True
+
+    if rep == "none":
+        add(make(anchor))
+
+    elif rep == "hourly":
+        try:
+            h0 = max(0, min(int(str(t.get("window_from", "08:00")).split(":")[0]), 23))
+            h1 = max(0, min(int(str(t.get("window_to", "22:00")).split(":")[0]), 23))
+        except Exception:
+            h0, h1 = 8, 22
+        if h1 < h0:
+            h1 = h0
+        day = max(anchor, frm.replace(hour=0, minute=0, second=0, microsecond=0))
+        for _ in range(500):
+            if day > to or len(out) >= _HIST_CAP:
+                break
+            for h in range(h0, h1 + 1, step):
+                if len(out) >= _HIST_CAP:
+                    break
+                occ = day.replace(hour=h, minute=mm)
+                if occ >= anchor:
+                    add(occ)
+            day += timedelta(days=1)
+
+    elif rep == "daily":
+        from_day = frm.replace(hour=0, minute=0, second=0, microsecond=0)
+        c = anchor
+        while c < from_day:
+            c += timedelta(days=step)
+        for _ in range(500):
+            if c > to or len(out) >= _HIST_CAP:
+                break
+            if not add(make(c)):
+                break
+            c += timedelta(days=step)
+
+    elif rep == "weekly":
+        if not t.get("weekdays"):
+            from_day = frm.replace(hour=0, minute=0, second=0, microsecond=0)
+            c = anchor
+            while c < from_day:
+                c += timedelta(days=7 * step)
+            for _ in range(500):
+                if c > to or len(out) >= _HIST_CAP:
+                    break
+                if not add(make(c)):
+                    break
+                c += timedelta(days=7 * step)
+        else:
+            wds = [int(w) for w in t.get("weekdays") if 1 <= int(w) <= 7]
+            from_day = frm.replace(hour=0, minute=0, second=0, microsecond=0)
+            c = max(from_day, anchor)
+            anchor_week = _week_index(anchor)
+            for _ in range(500):
+                if c > to or len(out) >= _HIST_CAP:
+                    break
+                w = _week_index(c)
+                if w >= anchor_week and (w - anchor_week) % step == 0 and c >= anchor \
+                        and _dow_mon1(c) in wds:
+                    add(make(c))
+                c += timedelta(days=1)
+
+    elif rep == "monthly":
+        day, y0, m0 = anchor.day, anchor.year, anchor.month
+        for k in range(240):
+            if len(out) >= _HIST_CAP:
+                break
+            m = m0 + k * step
+            y, m = y0 + (m - 1) // 12, (m - 1) % 12 + 1
+            try:
+                first = datetime(y, m, 1)
+            except ValueError:
+                continue
+            if first > to + timedelta(days=31):
+                break
+            if day > _month_max(y, m):
+                continue
+            c = first.replace(day=day)
+            if c < anchor:
+                continue
+            if not add(make(c)) and c > to:
+                break
+
+    elif rep == "yearly":
+        day, month, y0 = anchor.day, anchor.month, anchor.year
+        for k in range(60):
+            if len(out) >= _HIST_CAP:
+                break
+            y = y0 + k * step
+            try:
+                first = datetime(y, month, 1)
+            except ValueError:
+                continue
+            if first > to + timedelta(days=366):
+                break
+            if day > _month_max(y, month):
+                continue
+            c = first.replace(day=day)
+            if c < anchor:
+                continue
+            if not add(make(c)) and c > to:
+                break
+
+    out.sort()
+    return out
+
+
+_REPEAT_TEXT = {"none": "不重复", "hourly": "每小时", "daily": "每天",
+                "weekly": "每周", "monthly": "每月", "yearly": "每年"}
+
+
+def get_history(dev_id, days, q, limit):
+    try:
+        days = max(1, min(int(days or 90), 3650))
+    except (TypeError, ValueError):
+        days = 90
+    try:
+        limit = max(1, min(int(limit or 300), 2000))
+    except (TypeError, ValueError):
+        limit = 300
+    q = str(q or "").strip()
+    now = datetime.now()
+    start = now - timedelta(days=days)
+
+    rules = []
+    for t in load_json(todos_path(dev_id), {"todos": []}).get("todos", []):
+        if isinstance(t, dict):
+            rules.append(dict(t))
+    # 被删除的规则归档同样纳入历史
+    for t in load_json(history_path(dev_id), {"deleted": []}).get("deleted", []):
+        if isinstance(t, dict):
+            r = dict(t)
+            r["_deleted"] = True
+            rules.append(r)
+
+    items = []
+    for r in rules:
+        title = str(r.get("title", ""))
+        if q and q not in title:
+            continue
+        for occ in expand_rule(r, start, now):
+            items.append({"time": occ.strftime("%Y-%m-%d %H:%M"),
+                          "title": title,
+                          "repeat": _REPEAT_TEXT.get(r.get("repeat", "none"), "不重复"),
+                          "deleted": bool(r.get("_deleted"))})
+    items.sort(key=lambda x: x["time"], reverse=True)
+    return {"ok": True, "total": len(items), "items": items[:limit]}
 
 
 # ---------- 天气代理：高德优先，Open-Meteo 兜底 ----------
@@ -629,7 +846,8 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         p = urlparse(self.path).path
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
-                 "/api/holidays", "/api/check", "/api/users", "/api/devices"):
+                 "/api/holidays", "/api/check", "/api/users", "/api/devices",
+                 "/api/history"):
             a = self._auth()
             if a is None:
                 return self._send_json({"error": "未登录"}, 401)
@@ -676,6 +894,12 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json(get_weather(dev))
             if p == "/api/holidays":
                 return self._send_json(get_holidays())
+            if p == "/api/history":
+                qs = parse_qs(urlparse(self.path).query)
+                return self._send_json(get_history(dev,
+                                                   (qs.get("days") or [90])[0],
+                                                   (qs.get("q") or [""])[0],
+                                                   (qs.get("limit") or [300])[0]))
             if p == "/api/check":
                 cfg = load_json(config_path(dev), {})
                 return self._send_json({"ok": True,
@@ -717,10 +941,22 @@ class Handler(SimpleHTTPRequestHandler):
                 if dev is None:
                     return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
                 out = validate_todos(doc)
-                # bump_todo_rev 内部自带 _SAVE_LOCK，这里不能再包一层（非重入锁会自死锁）
-                rev = bump_todo_rev(dev)
-                out["rev"] = rev
-                atomic_write(todos_path(dev), json.dumps(out, ensure_ascii=False, indent=2))
+                with _SAVE_LOCK:
+                    # 归档本次被删除的规则，供历史待办查询
+                    old_list = load_json(todos_path(dev), {"todos": []}).get("todos", [])
+                    new_ids = {x["id"] for x in out["todos"]}
+                    hist = load_json(history_path(dev), {"deleted": []})
+                    for t in old_list:
+                        if isinstance(t, dict) and t.get("id") not in new_ids:
+                            r = dict(t)
+                            r["deleted_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                            hist.setdefault("deleted", []).append(r)
+                    hist["deleted"] = hist["deleted"][-_HIST_ARCHIVE:]
+                    atomic_write(history_path(dev), json.dumps(hist, ensure_ascii=False, indent=2))
+                    # bump_todo_rev 内部也用 _SAVE_LOCK（RLock 可重入）
+                    rev = bump_todo_rev(dev)
+                    out["rev"] = rev
+                    atomic_write(todos_path(dev), json.dumps(out, ensure_ascii=False, indent=2))
                 return self._send_json({"ok": True, "rev": rev})
             # /api/config
             dev = self._resolve_dev(a)
