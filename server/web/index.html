@@ -443,8 +443,6 @@
   $("btnPush").addEventListener("click", function () {
     var cfg = {
       city: $("pCity").value.trim(),
-      amap_key: $("pAmapKey").value.trim(),
-      adcode: adcode,
       lat: geo.lat || 0,
       lon: geo.lon || 0,
       night_start: $("pNightStart").value || "22:30",
@@ -454,6 +452,11 @@
       todos_min: Math.max(1, parseInt($("pTodosMin").value, 10) || 10),
       weather_min: Math.max(5, parseInt($("pWxMin").value, 10) || 30)
     };
+    // 高德 Key 仅管理员可推送（普通用户推送不会清掉管理员设置的 Key）
+    if (auth.role === "admin") {
+      cfg.amap_key = $("pAmapKey").value.trim();
+      cfg.adcode = adcode;
+    }
     api(dp("/api/config"), "POST", cfg)
       .then(function () { toast("已推送 ✓ 该设备约 1 分钟内生效"); })
       .catch(function (e) { toast("推送失败：" + e.message, 3500); });

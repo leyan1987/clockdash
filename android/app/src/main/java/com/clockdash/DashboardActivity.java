@@ -84,6 +84,8 @@ public class DashboardActivity extends Activity {
     private String mVersion = "";
     /** 运行时权限引导：一次启动只走一遍完整检查 */
     private boolean mPermPassDone = false;
+    /** 通知权限已询问过一次：避免用户拒绝后反复弹系统框（也防止卡在第一步） */
+    private boolean mNotifAsked = false;
     /** 最近一次待办列表重排的时间（诊断用，显示在状态栏） */
     private String mListBuiltAt = "";
 
@@ -220,9 +222,10 @@ public class DashboardActivity extends Activity {
     private void runPermissionPass() {
         if (mPermPassDone) return;
         // 1) 通知权限（Android 13+）：提醒可见性
-        if (Build.VERSION.SDK_INT >= 33
+        if (Build.VERSION.SDK_INT >= 33 && !mNotifAsked
                 && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
                         != PackageManager.PERMISSION_GRANTED) {
+            mNotifAsked = true; // 只问一次，拒绝后继续后续检查，不再反复弹
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 100);
             return; // 等授权回调后继续下一项
         }

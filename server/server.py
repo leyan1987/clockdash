@@ -423,7 +423,16 @@ def expand_rule(t, frm, to):
             c += timedelta(days=step)
 
     elif rep == "weekly":
-        if not t.get("weekdays"):
+        # 星期列表做安全转换（防手改数据文件注入异常值）
+        wds = []
+        for w in t.get("weekdays") or []:
+            try:
+                wv = int(w)
+                if 1 <= wv <= 7:
+                    wds.append(wv)
+            except (TypeError, ValueError):
+                pass
+        if not wds:
             from_day = frm.replace(hour=0, minute=0, second=0, microsecond=0)
             c = anchor
             while c < from_day:
@@ -435,7 +444,6 @@ def expand_rule(t, frm, to):
                     break
                 c += timedelta(days=7 * step)
         else:
-            wds = [int(w) for w in t.get("weekdays") if 1 <= int(w) <= 7]
             from_day = frm.replace(hour=0, minute=0, second=0, microsecond=0)
             c = max(from_day, anchor)
             anchor_week = _week_index(anchor)
@@ -925,6 +933,8 @@ class Handler(SimpleHTTPRequestHandler):
             if n > 1024 * 1024:
                 return self._send_json({"error": "请求体过大"}, 413)
             doc = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
+            if not isinstance(doc, dict):
+                doc = {}
             if p == "/api/login":
                 return self._handle_login(doc)
             if p == "/api/logout":
@@ -963,9 +973,14 @@ class Handler(SimpleHTTPRequestHandler):
             if dev is None:
                 return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
             cfg = load_json(config_path(dev), {})
-            for k in ("city", "lat", "lon", "night_start", "night_end",
-                      "night_clock_only", "remind_sound", "todos_min", "weather_min",
-                      "amap_key", "adcode"):
+            # 高德 Key/行政区划仅管理员可设置，普通用户推送时忽略这两项，
+            # 防止网页端空白字段把管理员配置的 Key 冲掉
+            keys = ("city", "lat", "lon", "night_start", "night_end",
+                    "night_clock_only", "remind_sound", "todos_min", "weather_min",
+                    "amap_key", "adcode")
+            if a.get("role") != "admin":
+                keys = tuple(k for k in keys if k not in ("amap_key", "adcode"))
+            for k in keys:
                 if k in doc:
                     cfg[k] = doc[k]
             cfg["rev"] = int(cfg.get("rev", 0)) + 1
