@@ -67,6 +67,7 @@ public class DashboardActivity extends Activity {
 
     private List<Todo> mTodos = new ArrayList<Todo>();
     private WeatherInfo mWx;
+    private long mLastWxMtime = 0;
     /** 法定节假日：date -> 节日名；调休补班：date -> 节日名 */
     private final HashMap<String, String> mOffDays = new HashMap<String, String>();
     private final HashMap<String, String> mBanDays = new HashMap<String, String>();
@@ -111,6 +112,8 @@ public class DashboardActivity extends Activity {
                             refreshAll(false);
                             // 离线（无服务器数据）时也必须跨天重绘日历和列表
                             buildCalendar(now);
+                            // 跨天后预报的“明天/后天”标签也要重算
+                            renderWeather();
                         } catch (Exception e) {
                             Log.e(TAG, "day-rollover", e);
                         }
@@ -361,11 +364,14 @@ public class DashboardActivity extends Activity {
         }.execute();
     }
 
-    /** 从缓存重读并重绘（sync 后 force=true，平时只在缓存变化时重绘） */
+    /** 从缓存重读并重绘（sync 后 force=true，平时在待办或天气缓存变化时重绘） */
     private void refreshAll(boolean force) {
         long mtime = Store.todosCacheTime(this);
-        if (force || (mtime != 0 && mtime != mLastTodosMtime)) {
+        long wmtime = Store.weatherCacheTime(this);
+        if (force || (mtime != 0 && mtime != mLastTodosMtime)
+                || (wmtime != 0 && wmtime != mLastWxMtime)) {
             mLastTodosMtime = mtime;
+            mLastWxMtime = wmtime;
             mTodos = Store.loadTodosCache(this);
             mWx = Store.loadWeatherCache(this);
             Store.loadHolidays(this, mOffDays, mBanDays);

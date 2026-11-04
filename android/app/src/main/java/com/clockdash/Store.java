@@ -134,6 +134,10 @@ public final class Store {
         return new File(c.getFilesDir(), TODOS_CACHE).lastModified();
     }
 
+    public static long weatherCacheTime(Context c) {
+        return new File(c.getFilesDir(), WEATHER_CACHE).lastModified();
+    }
+
     // ---------- 法定节假日 ----------
 
     /** 从服务器同步放假/调休数据（服务器每天缓存 holiday-cn），成功写入本地缓存 */
