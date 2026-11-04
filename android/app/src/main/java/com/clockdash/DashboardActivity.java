@@ -365,7 +365,7 @@ public class DashboardActivity extends Activity {
             protected void onPostExecute(Boolean ok) {
                 mSyncing = false;
                 refreshAll(true);
-                AlarmScheduler.scheduleReminders(activity);
+                AlarmScheduler.scheduleRemindersAsync(activity);
             }
         }.execute();
     }
@@ -384,7 +384,8 @@ public class DashboardActivity extends Activity {
             renderWeather();
             buildTodoRows();
             buildCalendar(Calendar.getInstance());
-            AlarmScheduler.scheduleReminders(this);
+            // 闹钟重排含文件 IO 与最多 60 次系统注册，走后台队列避免主线程卡顿
+            AlarmScheduler.scheduleRemindersAsync(this);
         }
         updateStatus();
     }

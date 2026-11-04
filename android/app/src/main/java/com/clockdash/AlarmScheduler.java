@@ -104,12 +104,14 @@ public final class AlarmScheduler {
         // 轻量推送检查：每分钟一个几十字节的版本号请求，后台一保存约 1 分钟内就同步
         am(c).setRepeating(AlarmManager.RTC_WAKEUP, now + 30000,
                 60000L, op(c, ACTION_CHECK, REQ_CHECK));
-        scheduleReminders(c);
+        scheduleRemindersAsync(c);
     }
 
     /**
      * 把未来 24 小时内的所有提醒注册为精确闹钟（4.0.3 上 set() 即精确）。
      * 先取消上一轮注册的闹钟再重排：删除/修改待办后，旧提醒才不会残留误响。
+     * 注意：内部有文件 IO + JSON 解析 + 最多 60 次闹钟注册，禁止在主线程调用，
+     * 主线程请用 scheduleRemindersAsync。
      */
     public static void scheduleReminders(Context c) {
         AlarmManager am = am(c);
@@ -150,6 +152,30 @@ public final class AlarmScheduler {
             }
         }
         Prefs.put(c, Prefs.K_SCHEDULED, codes.toString());
+    }
+
+    /** 重排提醒的单线程队列：串行执行，避免两次重排交叉导致漏注册/残留 */
+    private static final java.util.concurrent.ExecutorService sExec =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+
+    /**
+     * 主线程专用的重排入口：scheduleReminders 含文件读取、JSON 解析和最多
+     * 60 次系统闹钟注册，在老设备主线程上执行会造成明显卡顿甚至 ANR，
+     * 这里丢到单线程后台队列串行执行。
+     */
+    public static void scheduleRemindersAsync(final Context c) {
+        final Context app = c.getApplicationContext();
+        sExec.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    synchronized (AlarmScheduler.class) {
+                        scheduleReminders(app);
+                    }
+                } catch (Exception ignored) {
+                }
+            }
+        });
     }
 
     /** 取消上一轮注册到系统的提醒闹钟（记录的是 requestCode 列表） */

@@ -45,8 +45,8 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
 
         if (AlarmScheduler.ACTION_ROLLOVER.equals(action)) {
-            // 跨天：重排提醒（周期闹钟本身会自动续）
-            AlarmScheduler.scheduleReminders(context);
+            // 跨天：重排提醒（周期闹钟本身会自动续）；含文件 IO，走后台队列防 ANR
+            AlarmScheduler.scheduleRemindersAsync(context);
             return;
         }
 
@@ -113,7 +113,7 @@ public class AlarmReceiver extends BroadcastReceiver {
                         // 推送配置可能改了刷新间隔，整体重排
                         AlarmScheduler.schedulePeriodic(app);
                     } else {
-                        AlarmScheduler.scheduleReminders(app);
+                        AlarmScheduler.scheduleRemindersAsync(app);
                     }
                 } finally {
                     releaseLock();
@@ -121,7 +121,6 @@ public class AlarmReceiver extends BroadcastReceiver {
             }
         }.execute();
     }
-
     private void postNotification(Context c, String title, long occ, boolean sound, boolean popupOk) {
         try {
             AlarmScheduler.ensureChannel(c);

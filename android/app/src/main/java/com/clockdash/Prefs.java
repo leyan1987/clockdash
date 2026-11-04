@@ -38,7 +38,8 @@ public final class Prefs {
     }
 
     public static void put(Context c, String key, String value) {
-        sp(c).edit().putString(key, value == null ? "" : value).commit();
+        // apply() 异步写盘（API 9+），避免 commit() 同步刷盘在老设备主线程上卡顿
+        sp(c).edit().putString(key, value == null ? "" : value).apply();
     }
 
     public static boolean getBool(Context c, String key, boolean def) {
@@ -46,7 +47,7 @@ public final class Prefs {
     }
 
     public static void putBool(Context c, String key, boolean value) {
-        sp(c).edit().putBoolean(key, value).commit();
+        sp(c).edit().putBoolean(key, value).apply();
     }
 
     public static int getInt(Context c, String key, int def) {
@@ -77,7 +78,7 @@ public final class Prefs {
             }
             s = b.toString();
         }
-        p.edit().putString(K_NOTIFIED, s).commit();
+        p.edit().putString(K_NOTIFIED, s).apply();
     }
 
     /** 修改系统“充电时保持唤醒”设置（STAY_ON_WHILE_PLUGGED_IN = AC | USB） */
