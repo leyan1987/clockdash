@@ -132,9 +132,15 @@ public class AlarmReceiver extends BroadcastReceiver {
             int id = AlarmScheduler.reqCode(occ, title);
             PendingIntent pi = PendingIntent.getActivity(c, id, ri, AlarmScheduler.piFlags());
             boolean loud = !popupOk && sound; // 弹窗被拦时改用带铃声的强提醒渠道
-            Notification.Builder b = (Build.VERSION.SDK_INT >= 26 && loud)
-                    ? new Notification.Builder(c, AlarmScheduler.CHANNEL_ID_LOUD)
-                    : new Notification.Builder(c, AlarmScheduler.CHANNEL_ID);
+            // 注意：Notification.Builder 的双参构造是 API 26 才有的，老系统必须走单参构造，
+            // 否则抛 NoSuchMethodError（Error 不被 catch(Exception) 捕获）直接崩进程
+            Notification.Builder b;
+            if (Build.VERSION.SDK_INT >= 26) {
+                b = new Notification.Builder(c, loud
+                        ? AlarmScheduler.CHANNEL_ID_LOUD : AlarmScheduler.CHANNEL_ID);
+            } else {
+                b = new Notification.Builder(c);
+            }
             if (Build.VERSION.SDK_INT < 26) {
                 b.setPriority(Notification.PRIORITY_HIGH);
                 if (loud) {
@@ -154,8 +160,12 @@ public class AlarmReceiver extends BroadcastReceiver {
                 b.setFullScreenIntent(pi, true);
             }
             Notification n = Build.VERSION.SDK_INT >= 16 ? b.build() : b.getNotification();
-            ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE)).notify(id, n);
-        } catch (Exception ignored) {
+            if (n != null) {
+                ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE))
+                        .notify(id, n);
+            }
+        } catch (Throwable ignored) {
+            // 用 Throwable 兜底：老设备碎片化严重，避免通知环节把进程带崩
         }
     }
 
@@ -165,7 +175,12 @@ public class AlarmReceiver extends BroadcastReceiver {
             sLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "clockdash:sync");
             sLock.setReferenceCounted(false);
         }
-        sLock.acquire(60000);
+        // acquire(long) 是 API 17（Android 4.2）才有的，4.0.3 上会 NoSuchMethodError
+        if (Build.VERSION.SDK_INT >= 17) {
+            sLock.acquire(60000);
+        } else {
+            sLock.acquire();
+        }
     }
 
     private static void releaseLock() {
