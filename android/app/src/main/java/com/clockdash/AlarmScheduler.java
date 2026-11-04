@@ -101,9 +101,10 @@ public final class AlarmScheduler {
                 wxMin * 60000L, op(c, ACTION_WX, REQ_WX));
         am(c).setRepeating(AlarmManager.RTC_WAKEUP, nextMidnight() + 120000L,
                 86400000L, op(c, ACTION_ROLLOVER, REQ_ROLLOVER));
-        // 轻量推送检查：每分钟一个几十字节的版本号请求，后台一保存约 1 分钟内就同步
+        // 轻量推送检查：每 5 分钟一个几十字节的版本号请求，降低老设备唤醒频率；
+        // 后台一保存最迟约 5 分钟内同步（点开应用/整点同步仍是即时路径）
         am(c).setRepeating(AlarmManager.RTC_WAKEUP, now + 30000,
-                60000L, op(c, ACTION_CHECK, REQ_CHECK));
+                300000L, op(c, ACTION_CHECK, REQ_CHECK));
         scheduleRemindersAsync(c);
     }
 
