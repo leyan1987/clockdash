@@ -818,8 +818,8 @@ public class DashboardActivity extends Activity {
             v.setBackgroundDrawable(null);
             v.setPadding(0, 0, 0, 0);
             boolean today = "1".equals(row[2]);
-            // 最近一条待办放大突出，其余常规字号
-            when.setTextSize(big ? 15 : 13);
+            // 最近一条待办只放大标题，时间保持常规字号
+            when.setTextSize(13);
             title.setTextSize(big ? 20 : 16);
             when.setTextColor(today ? getResources().getColor(R.color.accent) : getResources().getColor(R.color.muted));
             title.setTypeface(today ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
