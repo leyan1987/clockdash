@@ -7,6 +7,8 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.media.AudioAttributes;
+import android.media.RingtoneManager;
 import android.os.Build;
 
 import org.json.JSONArray;
@@ -29,18 +31,30 @@ public final class AlarmScheduler {
     private static final int REQ_ROLLOVER = 3;
     private static final int REQ_CHECK = 4;
     private static final int MAX_REMINDERS = 60;
+    /** 错过提醒的补救窗口：到点后 5 分钟内同步到的，立即补弹提醒 */
+    private static final long LATE_GRACE = 5 * 60000L;
 
     private AlarmScheduler() {}
 
     /** 通知渠道（Android 8.0+ 必需；老系统自动走旧路径） */
     public static final String CHANNEL_ID = "clockdash_alarms";
+    /** 弹窗被系统拦截时的强提醒渠道（带铃声与震动） */
+    public static final String CHANNEL_ID_LOUD = "clockdash_alarms_loud";
 
     public static void ensureChannel(Context c) {
         if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "日程提醒",
+            NotificationManager nm =
+                    (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
+            nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "日程提醒",
+                    NotificationManager.IMPORTANCE_HIGH));
+            // 弹窗被拦时的强提醒渠道：随通知播放闹钟铃声并震动
+            NotificationChannel loud = new NotificationChannel(CHANNEL_ID_LOUD, "日程提醒（强提醒）",
                     NotificationManager.IMPORTANCE_HIGH);
-            ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE))
-                    .createNotificationChannel(ch);
+            AudioAttributes attrs = new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM).build();
+            loud.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM), attrs);
+            loud.enableVibration(true);
+            nm.createNotificationChannel(loud);
         }
     }
 
@@ -113,7 +127,7 @@ public final class AlarmScheduler {
             for (int k = 0; k < occs.size() && count < MAX_REMINDERS; k++) {
                 long occ = occs.get(k).longValue();
                 long fireAt = occ - t.remind * 60000L;
-                if (fireAt <= now + 10000) continue;
+                if (fireAt < now - LATE_GRACE) continue; // 超过补救窗口的错过不再提醒
                 String key = t.id + ":" + occ;
                 if (Prefs.isNotified(c, key)) continue;
                 int code = reqCode(occ, t.title);
@@ -124,7 +138,13 @@ public final class AlarmScheduler {
                 intent.putExtra("key", key);
                 intent.putExtra("sound", Prefs.getBool(c, Prefs.K_SOUND, true));
                 PendingIntent pi = PendingIntent.getBroadcast(c, code, intent, piFlags());
-                setExactCompat(c, am(c), fireAt, pi);
+                if (fireAt <= now + 10000) {
+                    // 提醒时刻已过但还在补救窗口内（如刚同步到的临期待办）：
+                    // 不能简单跳过，否则待办到点“无声无息消失”。延后 2 秒立即补提醒。
+                    am(c).set(AlarmManager.RTC_WAKEUP, now + 2000, pi);
+                } else {
+                    setExactCompat(c, am(c), fireAt, pi);
+                }
                 codes.put(code);
                 count++;
             }

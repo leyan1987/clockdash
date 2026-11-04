@@ -26,17 +26,21 @@ public class AlarmReceiver extends BroadcastReceiver {
             boolean sound = intent.getBooleanExtra("sound", true);
             String key = intent.getStringExtra("key");
             if (key != null) Prefs.addNotified(context, key);
-            postNotification(context, title, occ, sound);
             Intent ri = new Intent(context, ReminderActivity.class);
             ri.putExtra("title", title);
             ri.putExtra("occ", occ);
             ri.putExtra("sound", sound);
             ri.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_USER_ACTION);
+            boolean popupOk = true;
             try {
                 context.startActivity(ri);
-            } catch (Exception ignored) {
-                // 现代 Android 限制后台拉起界面：此时靠全屏意图通知弹出提醒
+            } catch (Exception e) {
+                // 现代 Android 限制后台拉起界面：改发带铃声的强提醒通知
+                popupOk = false;
             }
+            // 弹窗成功 → 通知静音（铃声由提醒界面负责）；弹窗失败 → 通知改走强提醒
+            boolean notifSound = !popupOk && sound;
+            postNotification(context, title, occ, notifSound, popupOk);
             return;
         }
 
@@ -118,7 +122,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         }.execute();
     }
 
-    private void postNotification(Context c, String title, long occ, boolean sound) {
+    private void postNotification(Context c, String title, long occ, boolean sound, boolean popupOk) {
         try {
             AlarmScheduler.ensureChannel(c);
             Intent ri = new Intent(c, ReminderActivity.class);
@@ -127,9 +131,18 @@ public class AlarmReceiver extends BroadcastReceiver {
             ri.putExtra("sound", sound);
             int id = AlarmScheduler.reqCode(occ, title);
             PendingIntent pi = PendingIntent.getActivity(c, id, ri, AlarmScheduler.piFlags());
-            Notification.Builder b = Build.VERSION.SDK_INT >= 26
-                    ? new Notification.Builder(c, AlarmScheduler.CHANNEL_ID)
-                    : new Notification.Builder(c);
+            boolean loud = !popupOk && sound; // 弹窗被拦时改用带铃声的强提醒渠道
+            Notification.Builder b = (Build.VERSION.SDK_INT >= 26 && loud)
+                    ? new Notification.Builder(c, AlarmScheduler.CHANNEL_ID_LOUD)
+                    : new Notification.Builder(c, AlarmScheduler.CHANNEL_ID);
+            if (Build.VERSION.SDK_INT < 26) {
+                b.setPriority(Notification.PRIORITY_HIGH);
+                if (loud) {
+                    b.setSound(android.media.RingtoneManager
+                            .getDefaultUri(android.media.RingtoneManager.TYPE_ALARM));
+                    b.setVibrate(new long[]{0, 400, 400, 400, 400, 800});
+                }
+            }
             b.setSmallIcon(android.R.drawable.ic_lock_idle_alarm);
             b.setWhen(System.currentTimeMillis());
             b.setAutoCancel(true);
@@ -140,7 +153,6 @@ public class AlarmReceiver extends BroadcastReceiver {
                 // 现代 Android 禁止后台拉起界面：用全屏意图弹出提醒界面
                 b.setFullScreenIntent(pi, true);
             }
-            // 声音由弹出的提醒界面负责，这里保持静音避免重复响铃
             Notification n = Build.VERSION.SDK_INT >= 16 ? b.build() : b.getNotification();
             ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE)).notify(id, n);
         } catch (Exception ignored) {

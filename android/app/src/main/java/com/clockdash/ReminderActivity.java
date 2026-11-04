@@ -63,13 +63,13 @@ public class ReminderActivity extends Activity {
         if (sound) {
             startSound();
         }
-        // 2 分钟后自动关闭
+        // 30 秒后自动关闭
         mHandler.postDelayed(new Runnable() {
             @Override
             public void run() {
                 finish();
             }
-        }, 120000);
+        }, 30000);
     }
 
     private void startSound() {
