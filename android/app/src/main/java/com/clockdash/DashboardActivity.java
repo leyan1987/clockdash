@@ -729,7 +729,8 @@ public class DashboardActivity extends Activity {
         if (prevTitle != null) {
             Calendar pc = Calendar.getInstance();
             pc.setTimeInMillis(prevOcc);
-            mRows.add(new String[]{"上一个 · " + relDay(pc, nowC), prevTitle, "0", "0", "1"});
+            // 不写"上一个"字样，时间标签短不折行，靠边框区分
+            mRows.add(new String[]{relDay(pc, nowC), prevTitle, "0", "0", "1"});
         }
         for (int i = 0; i < occs.size() && mRows.size() < 8; i++) {
             long occ = ((Long) occs.get(i)[0]).longValue();
@@ -741,8 +742,8 @@ public class DashboardActivity extends Activity {
             if (today) when = "今天 " + HM_FMT.format(c.getTime());
             else if (sameDay(c, tomorrowC)) when = "明天 " + HM_FMT.format(c.getTime());
             else when = new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(c.getTime());
-            String big = (prevTitle == null && mRows.isEmpty()) ? "1" : "0";
-            mRows.add(new String[]{when, title, today ? "1" : "0", big, "0"});
+            // 最近的一条未来待办始终大字突出（i==0 即未来部分第一条）
+            mRows.add(new String[]{when, title, today ? "1" : "0", i == 0 ? "1" : "0", "0"});
         }
         if (mRows.isEmpty()) {
             String hint = Store.serverBase(this) == null ? "离线模式 · 仅时钟日历" : "近期没有安排";
