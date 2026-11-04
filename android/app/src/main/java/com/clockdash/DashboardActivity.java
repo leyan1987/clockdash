@@ -57,6 +57,8 @@ public class DashboardActivity extends Activity {
     private TextView tvCalTitle, tvCalYear;
     private TextView[] tvFcDay = new TextView[3];
     private TextView[] tvFcTxt = new TextView[3];
+    private WeatherIconView icNow;
+    private WeatherIconView[] icFc = new WeatherIconView[3];
     private TextView[] wdViews = new TextView[7];
     private LinearLayout colMid, colRight, boxWx, calGrid;
     private View rowFc;
@@ -174,6 +176,10 @@ public class DashboardActivity extends Activity {
         tvFcTxt[0] = (TextView) findViewById(R.id.tvFcTxt0);
         tvFcTxt[1] = (TextView) findViewById(R.id.tvFcTxt1);
         tvFcTxt[2] = (TextView) findViewById(R.id.tvFcTxt2);
+        icNow = (WeatherIconView) findViewById(R.id.icNow);
+        icFc[0] = (WeatherIconView) findViewById(R.id.icFc0);
+        icFc[1] = (WeatherIconView) findViewById(R.id.icFc1);
+        icFc[2] = (WeatherIconView) findViewById(R.id.icFc2);
 
         int[] wdIds = {R.id.wd0, R.id.wd1, R.id.wd2, R.id.wd3, R.id.wd4, R.id.wd5, R.id.wd6};
         for (int i = 0; i < 7; i++) {
@@ -634,14 +640,17 @@ public class DashboardActivity extends Activity {
             tvCond.setText(Store.serverBase(this) == null ? "未配置服务器" : "等待天气数据");
             tvCity.setText("");
             tvMeta.setText("");
+            icNow.setType(WeatherIconView.T_NONE);
             for (int i = 0; i < 3; i++) {
                 tvFcDay[i].setText("--");
                 tvFcTxt[i].setText("--");
+                icFc[i].setType(WeatherIconView.T_NONE);
             }
             return;
         }
         tvTemp.setText(Math.round(mWx.temp) + "°");
         tvCond.setText(mWx.condText);
+        icNow.setType(WeatherIconView.typeFor(mWx.condText));
         String city = Prefs.get(this, Prefs.K_CITY, "");
         tvCity.setText(city.length() > 0 ? city : "");
         if (mWx.dayMax.length > 0 && mWx.dayMin.length > 0) {
@@ -664,12 +673,14 @@ public class DashboardActivity extends Activity {
                     tvFcDay[i].setText(label);
                     tvFcTxt[i].setText(mWx.dayText[idx] + " "
                             + Math.round(mWx.dayMin[idx]) + "°/" + Math.round(mWx.dayMax[idx]) + "°");
+                    icFc[i].setType(WeatherIconView.typeFor(mWx.dayText[idx]));
                     continue;
                 } catch (Exception ignored) {
                 }
             }
             tvFcDay[i].setText("--");
             tvFcTxt[i].setText("--");
+            icFc[i].setType(WeatherIconView.T_NONE);
         }
     }
 

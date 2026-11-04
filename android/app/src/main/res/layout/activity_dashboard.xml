@@ -47,6 +47,12 @@
                 android:textColor="@color/fg"
                 android:text="--°" />
 
+            <com.clockdash.WeatherIconView
+                android:id="@+id/icNow"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:layout_marginLeft="10dp" />
+
             <LinearLayout
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -78,30 +84,44 @@
             android:textSize="15sp"
             android:textColor="@color/muted" />
 
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1" />
-
+        <!-- 未来三天预报：紧跟在今天天气下方 -->
         <LinearLayout
             android:id="@+id/rowFc"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
             android:orientation="horizontal">
 
             <LinearLayout style="@style/FcCell">
                 <TextView android:id="@+id/tvFcDay0" style="@style/FcDay" />
+                <com.clockdash.WeatherIconView
+                    android:id="@+id/icFc0"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp" />
                 <TextView android:id="@+id/tvFcTxt0" style="@style/FcTxt" />
             </LinearLayout>
             <LinearLayout style="@style/FcCell">
                 <TextView android:id="@+id/tvFcDay1" style="@style/FcDay" />
+                <com.clockdash.WeatherIconView
+                    android:id="@+id/icFc1"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp" />
                 <TextView android:id="@+id/tvFcTxt1" style="@style/FcTxt" />
             </LinearLayout>
             <LinearLayout style="@style/FcCell">
                 <TextView android:id="@+id/tvFcDay2" style="@style/FcDay" />
+                <com.clockdash.WeatherIconView
+                    android:id="@+id/icFc2"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp" />
                 <TextView android:id="@+id/tvFcTxt2" style="@style/FcTxt" />
             </LinearLayout>
         </LinearLayout>
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
     </LinearLayout>
 
     <View
