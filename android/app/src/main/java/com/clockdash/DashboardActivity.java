@@ -694,13 +694,26 @@ public class DashboardActivity extends Activity {
         mRows.clear();
         long now = System.currentTimeMillis();
         ArrayList<Object[]> occs = new ArrayList<Object[]>(); // {Long occ, String title}
+        // 上一个待办：最近一次已过去的发生（只往前找 24 小时，太旧的没有参考意义）
+        long lookback = now - 24L * 3600000L;
+        long prevOcc = 0;
+        String prevTitle = null;
         for (int i = 0; i < mTodos.size(); i++) {
             Todo t = mTodos.get(i);
-            // 从当前时刻起算（无宽限）：过点的条目立即跳到下一次发生
-            ArrayList<Long> list = Recur.expand(t, now, now + 7L * 86400000L);
-            // 每条待办只取最近一次发生：短周期循环（如每2小时）不会占满列表把其他待办顶走
-            if (!list.isEmpty()) {
-                occs.add(new Object[]{list.get(0), t.title});
+            ArrayList<Long> list = Recur.expand(t, lookback, now + 7L * 86400000L);
+            if (list.isEmpty()) continue;
+            for (int k = 0; k < list.size(); k++) {
+                long occ = list.get(k).longValue();
+                if (occ < now) {
+                    if (occ > prevOcc) { // 已过去的里取最近的一次
+                        prevOcc = occ;
+                        prevTitle = t.title;
+                    }
+                } else {
+                    // 未来部分每条待办只取最近一次发生：短周期循环不会占满列表
+                    occs.add(new Object[]{list.get(k), t.title});
+                    break;
+                }
             }
         }
         java.util.Collections.sort(occs, new java.util.Comparator<Object[]>() {
@@ -712,28 +725,41 @@ public class DashboardActivity extends Activity {
         Calendar nowC = Calendar.getInstance();
         Calendar tomorrowC = Calendar.getInstance();
         tomorrowC.add(Calendar.DAY_OF_MONTH, 1);
+        // 行结构：{时间, 标题, 是否今天, 是否最近一条(大字), 是否上一个(带框)}
+        if (prevTitle != null) {
+            Calendar pc = Calendar.getInstance();
+            pc.setTimeInMillis(prevOcc);
+            mRows.add(new String[]{"上一个 · " + relDay(pc, nowC), prevTitle, "0", "0", "1"});
+        }
         for (int i = 0; i < occs.size() && mRows.size() < 8; i++) {
             long occ = ((Long) occs.get(i)[0]).longValue();
             String title = (String) occs.get(i)[1];
             Calendar c = Calendar.getInstance();
             c.setTimeInMillis(occ);
-            String hm = HM_FMT.format(c.getTime());
-            String when;
-            if (sameDay(c, nowC)) when = "今天 " + hm;
-            else if (sameDay(c, tomorrowC)) when = "明天 " + hm;
-            else when = new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(c.getTime());
             boolean today = sameDay(c, nowC);
-            // 行结构：{时间, 标题, 是否今天, 是否最近一条(大字)}
-            String big = mRows.isEmpty() ? "1" : "0";
-            mRows.add(new String[]{when, title, today ? "1" : "0", big});
+            String when;
+            if (today) when = "今天 " + HM_FMT.format(c.getTime());
+            else if (sameDay(c, tomorrowC)) when = "明天 " + HM_FMT.format(c.getTime());
+            else when = new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(c.getTime());
+            String big = (prevTitle == null && mRows.isEmpty()) ? "1" : "0";
+            mRows.add(new String[]{when, title, today ? "1" : "0", big, "0"});
         }
         if (mRows.isEmpty()) {
             String hint = Store.serverBase(this) == null ? "离线模式 · 仅时钟日历" : "近期没有安排";
-            mRows.add(new String[]{"", hint, "0", "0"});
+            mRows.add(new String[]{"", hint, "0", "0", "0"});
         }
         mAdapter.notifyDataSetChanged();
         mListBuiltAt = HM_FMT.format(new Date());
         Log.d(TAG, "重排待办 " + mRows.size() + " 行，首行=" + mRows.get(0)[0] + " " + mRows.get(0)[1]);
+    }
+
+    /** 相对日期标签：今天/昨天 HH:mm，更旧则 MM-dd HH:mm */
+    private String relDay(Calendar c, Calendar nowC) {
+        if (sameDay(c, nowC)) return "今天 " + HM_FMT.format(c.getTime());
+        Calendar yc = (Calendar) nowC.clone();
+        yc.add(Calendar.DAY_OF_MONTH, -1);
+        if (sameDay(c, yc)) return "昨天 " + HM_FMT.format(c.getTime());
+        return new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(c.getTime());
     }
 
     private static boolean sameDay(Calendar a, Calendar b) {
@@ -768,8 +794,28 @@ public class DashboardActivity extends Activity {
             TextView title = (TextView) v.findViewById(R.id.tTitle);
             String[] row = mRows.get(position);
             boolean big = "1".equals(row[3]);
+            boolean prev = row.length > 4 && "1".equals(row[4]);
             when.setText(row[0]);
             title.setText(row[1]);
+            if (prev) {
+                // 上一个待办：琥珀色圆角描边框起来，文字调暗表示已过去
+                int dp6 = (int) (getResources().getDisplayMetrics().density * 6);
+                GradientDrawable frame = new GradientDrawable();
+                frame.setCornerRadius(getResources().getDisplayMetrics().density * 8);
+                frame.setStroke((int) (getResources().getDisplayMetrics().density * 1.5f)
+                        + 1, getResources().getColor(R.color.amber));
+                frame.setColor(0x1AF2B23E); // 极淡的琥珀底色
+                v.setBackgroundDrawable(frame);
+                v.setPadding(dp6, dp6, dp6, dp6);
+                when.setTextSize(13);
+                title.setTextSize(15);
+                when.setTextColor(getResources().getColor(R.color.dim));
+                title.setTextColor(getResources().getColor(R.color.muted));
+                title.setTypeface(Typeface.DEFAULT);
+                return v;
+            }
+            v.setBackgroundDrawable(null);
+            v.setPadding(0, 0, 0, 0);
             boolean today = "1".equals(row[2]);
             // 最近一条待办放大突出，其余常规字号
             when.setTextSize(big ? 15 : 13);
