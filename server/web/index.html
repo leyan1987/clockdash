@@ -88,13 +88,16 @@
     <div class="hint">平板每 5 分钟向服务器报一次到，超过设定时间没来即判定失联。
       服务器在公网、平板在内网，无法反向连接平板，所以告警推送到你配置的机器人；
       发给平板的留言则在它下一次轮询时带回（离线消息补发）。</div>
+    <div class="hint">流量说明：设备关机 / 离线时服务器不会向设备发任何数据（没有重试机制），
+      看门狗只读写本机文件、不联网；唯一的外发是告警 Webhook，默认未配置即 0 流量，
+      配置后也只在状态翻转时发一次。留言最多随检查下发 3 次。</div>
 
     <div class="linecheck"><input type="checkbox" id="wEnabled">
       <label for="wEnabled" style="margin:0;color:var(--fg)">启用失联看护</label></div>
     <div class="row">
       <div><label>失联阈值（分钟，最小 6）</label>
         <input type="number" id="wAfter" min="6" max="1440" value="15"></div>
-      <div><label>持续失联重复提醒（分钟，0=只报一次）</label>
+      <div><label>持续失联重复提醒（分钟，0=只报一次，开启时最小 5）</label>
         <input type="number" id="wRepeat" min="0" max="1440" value="0"></div>
     </div>
     <div class="linecheck"><input type="checkbox" id="wRecover">
@@ -125,7 +128,7 @@
         <input id="wMsg" placeholder="例如：晚上记得关掉客厅的平板" maxlength="200">
         <button class="primary" id="btnMsgSend" style="flex:0 0 90px">发送</button>
       </div>
-      <div class="hint">留言保存在服务器上，平板即使此刻离线，恢复后第一次检查也会收到（保留 24 小时）。</div>
+      <div class="hint">留言保存在服务器上，平板即使此刻离线，恢复后第一次检查也会收到（保留 24 小时，最多重发 3 次）。</div>
     </div>
 
     <div style="margin-top:14px">

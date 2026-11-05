@@ -315,6 +315,14 @@ WATCH_DEFAULT = {
     "webhook_url": "",
 }
 
+# 一条留言最多随 /api/check 下发几次。平板端目前没有 ack，若不限次数，
+# 设备在线时会把同一条 200 字留言每次检查都重发一遍（约 190 KB/天）。
+# 计数只在设备真的来取时才 +1，所以不影响设备离线期间的补发可靠性。
+NOTICE_MAX_SEND = 3
+# 持续失联重复提醒的最小间隔：这是唯一会随离线时长线性增长的外发路径，
+# 必须给下限，避免误填 1 分钟把 Webhook 刷爆（0 = 关闭，零持续流量）。
+MIN_REPEAT_MIN = 5
+
 
 def load_watch_config():
     c = load_json(WATCH_CONFIG_FILE, {})
@@ -330,6 +338,8 @@ def load_watch_config():
             out[k] = max(lo, min(hi, int(out[k])))
         except (TypeError, ValueError):
             out[k] = dft
+    if 0 < out["repeat_min"] < MIN_REPEAT_MIN:
+        out["repeat_min"] = MIN_REPEAT_MIN
     out["enabled"] = bool(out["enabled"])
     out["notify_recover"] = bool(out["notify_recover"])
     out["webhook_type"] = str(out["webhook_type"] or "wecom")
@@ -535,23 +545,33 @@ def watchdog_status():
 
 def peek_device_notice(dev_id):
     """取该设备最新一条未过期的服务器留言，随 /api/check 带回（离线消息补发）。
-    不主动删除：平板端目前没有 ack 机制，重复下发直到过期更安全，客户端可用
-    notice.id 自行去重。"""
+    每条最多下发 NOTICE_MAX_SEND 次：平板端没有 ack，但不能让同一条消息
+    无限期挂在每次检查的响应里白耗流量。只有设备真的来取才计数，设备离线
+    期间一次都不消耗，所以补发可靠性不受影响。"""
     now = time.time()
+    result = None
     with _SAVE_LOCK:
         s = load_watch_state()
         old = s["messages"].get(dev_id, [])
         msgs = [m for m in old if float(m.get("expires", 0) or 0) > now]
-        if len(msgs) != len(old):
-            if msgs:
-                s["messages"][dev_id] = msgs
+        dirty = len(msgs) != len(old)
+        if msgs:
+            m = msgs[-1]
+            sent = int(m.get("sent", 0) or 0) + 1
+            result = {"id": m.get("id", ""), "text": m.get("text", ""),
+                      "ts": m.get("ts", 0)}
+            if sent >= NOTICE_MAX_SEND:
+                msgs.pop()  # 次数用尽，移出队列，后续 /api/check 响应恢复原大小
             else:
-                s["messages"].pop(dev_id, None)
+                m["sent"] = sent
+            dirty = True
+        if msgs:
+            s["messages"][dev_id] = msgs
+        else:
+            s["messages"].pop(dev_id, None)
+        if dirty:
             save_watch_state(s)
-    if not msgs:
-        return None
-    m = msgs[-1]
-    return {"id": m.get("id", ""), "text": m.get("text", ""), "ts": m.get("ts", 0)}
+    return result
 
 
 def get_todo_rev(dev_id):
