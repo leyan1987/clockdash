@@ -392,8 +392,11 @@ public class DashboardActivity extends Activity {
 
     private void updateStatus() {
         long t = Store.todosCacheTime(this);
+        long wt = Store.weatherCacheTime(this);
+        String wx = wt == 0 ? "" : " · 天气 "
+                + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(wt));
         String extra = " · 列于 " + (mListBuiltAt.length() == 0 ? "--:--" : mListBuiltAt)
-                + " · v" + mVersion;
+                + wx + " · v" + mVersion;
         if (Store.serverBase(this) == null) {
             tvStatus.setText("未配置服务器：连点右上角三次进入设置" + extra);
             tvStatus.setTextColor(getResources().getColor(R.color.amber));

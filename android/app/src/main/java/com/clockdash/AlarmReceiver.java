@@ -67,7 +67,15 @@ public class AlarmReceiver extends BroadcastReceiver {
                         if (!o.optBoolean("ok", false)) return Boolean.FALSE;
                         boolean changed = o.optInt("todo_rev", 0) != Prefs.getInt(app, Prefs.K_TODO_REV, 0)
                                 || o.optInt("config_rev", 0) != Prefs.getInt(app, Prefs.K_REV, 0);
-                        if (!changed) return Boolean.FALSE;
+                        if (!changed) {
+                            // 天气自愈：天气闹钟丢失/网络长期断开恢复后，缓存超过
+                            // 2 小时未更新就借这次 check 补拉一次，不再依赖单一闹钟
+                            long wxAge = System.currentTimeMillis() - Store.weatherCacheTime(app);
+                            if (wxAge > 2L * 3600000L) {
+                                Store.fetchWeather(app);
+                            }
+                            return Boolean.FALSE;
+                        }
                         Store.fetchTodos(app);
                         Store.fetchConfigPush(app);
                         Store.fetchHolidays(app);
