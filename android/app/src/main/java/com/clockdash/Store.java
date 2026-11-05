@@ -145,8 +145,14 @@ public final class Store {
         String base = serverBase(c);
         if (base == null) return;
         String s = HttpUtil.get(base + "/api/holidays", Prefs.get(c, Prefs.K_TOKEN, ""), 12000);
-        if (s == null || !s.contains("\"ok\":true")) return;
-        writePrivate(c, HOLIDAYS_CACHE, s);
+        if (s == null) return;
+        // 用 JSON 解析判断 ok，不能做 "ok":true 字符串匹配：
+        // Python json.dumps 输出带空格（"ok": true），字符串匹配永远失配
+        try {
+            if (!new org.json.JSONObject(s).optBoolean("ok", false)) return;
+            writePrivate(c, HOLIDAYS_CACHE, s);
+        } catch (Exception ignored) {
+        }
     }
 
     /** 解析缓存：off = 放假日(date->节日名)，ban = 调休补班日(date->节日名) */

@@ -900,7 +900,12 @@ class Handler(SimpleHTTPRequestHandler):
                 if dev is None:
                     return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
             if p == "/api/todos":
-                return self._send_json(load_json(todos_path(dev), {"version": 1, "todos": []}))
+                out = load_json(todos_path(dev), {"version": 1, "todos": []})
+                out = dict(out)
+                # 附带当前 rev：历史文件里可能没有该字段，平板存成 0 后会
+                # 与 /api/check 的 todo_rev 永远不等，导致每 5 分钟全量同步
+                out["rev"] = get_todo_rev(dev)
+                return self._send_json(out)
             if p == "/api/config":
                 cfg = load_json(config_path(dev), {})
                 # 平板不需要高德 Key，默认剥离；管理员带 full=1 才返回
