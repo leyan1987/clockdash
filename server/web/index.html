@@ -405,7 +405,10 @@
           var html = "";
           for (var i = 0; i < j.districts.length && i < 6; i++) {
             var d = j.districts[i];
-            html += '<button class="mini" style="margin:2px" data-adcode="' + esc(d.adcode) + '" data-name="' + esc(d.name) + '">'
+            /* 高德 district 结果自带 center（"经度,纬度"），直接带回给点击回填，
+               避免依赖 Open-Meteo 按中文名反查失败后残留旧经纬度 */
+            html += '<button class="mini" style="margin:2px" data-adcode="' + esc(d.adcode) + '" data-name="' + esc(d.name) + '"'
+              + (d.center ? ' data-center="' + esc(d.center) + '"' : '') + '>'
               + esc(d.name) + "（" + esc(d.adcode) + "）</button>";
           }
           $("geoList").innerHTML = html;
@@ -434,7 +437,16 @@
       adcode = b.dataset.adcode;
       $("pCity").value = b.dataset.name;
       setHintAdcode(adcode + " ✓");
-      geocodeOpenMeteo(b.dataset.name);
+      if (b.dataset.center) {
+        /* 高德 center 是"经度,纬度"顺序，优先直接采用（与 adcode 同源最可靠） */
+        var p = b.dataset.center.split(",");
+        if (p.length === 2 && +p[0] !== 0 && +p[1] !== 0) {
+          geo.lon = +p[0]; geo.lat = +p[1];
+          setHintGeo(geo.lat, geo.lon);
+        }
+      } else {
+        geocodeOpenMeteo(b.dataset.name);
+      }
     } else {
       geo.lat = +b.dataset.lat; geo.lon = +b.dataset.lon;
       setHintGeo(geo.lat, geo.lon);
