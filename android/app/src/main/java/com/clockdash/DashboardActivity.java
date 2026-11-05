@@ -672,7 +672,8 @@ public class DashboardActivity extends Activity {
                     cal.setTime(df.parse(mWx.dayDate[idx]));
                     String label = i == 0 ? "明天" : "周" + "日一二三四五六".charAt(dowSun1(cal));
                     tvFcDay[i].setText(label);
-                    tvFcTxt[i].setText(mWx.dayText[idx] + " "
+                    // 统一两行显示：第一行天气文字、第二行温度，各格高度一致
+                    tvFcTxt[i].setText(mWx.dayText[idx] + "\n"
                             + Math.round(mWx.dayMin[idx]) + "°/" + Math.round(mWx.dayMax[idx]) + "°");
                     icFc[i].setType(WeatherIconView.typeFor(mWx.dayText[idx]));
                     continue;
