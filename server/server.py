@@ -239,6 +239,24 @@ def device_by_token(tok):
     return None
 
 
+def device_token(dev_id):
+    for d in load_devices()["devices"]:
+        if d.get("id") == dev_id:
+            return str(d.get("token", "") or "")
+    return ""
+
+
+def token_group(dev_id):
+    """同一口令的所有设备（口令即设备组）：一次推送，全组生效。
+    场景：多个平板填了同一个设备口令，希望改一份配置/待办全都同步。"""
+    tok = device_token(dev_id)
+    if not tok:
+        return [dev_id]
+    ids = [d.get("id") for d in load_devices()["devices"]
+           if str(d.get("token", "") or "") == tok]
+    return ids if dev_id in ids else ids + [dev_id]
+
+
 def todos_path(dev_id):
     return os.path.join(DATA_DIR, "todos_%s.json" % dev_id)
 
@@ -281,15 +299,25 @@ def get_todo_rev(dev_id):
         return 0
 
 
+def set_todo_rev(dev_id, val):
+    with _SAVE_LOCK:
+        st = load_json(STATE_FILE, {})
+        v = st.get("todo_rev", 0)
+        if not isinstance(v, dict):
+            v = {"default": int(v) if isinstance(v, int) else 0}
+        v[dev_id] = int(val)
+        atomic_write(STATE_FILE, json.dumps({"todo_rev": v}))
+
+
 def bump_todo_rev(dev_id):
     with _SAVE_LOCK:
         st = load_json(STATE_FILE, {})
         v = st.get("todo_rev", 0)
         if not isinstance(v, dict):
             v = {"default": int(v) if isinstance(v, int) else 0}
-        v[dev_id] = int(v.get(dev_id, 0)) + 1
-        atomic_write(STATE_FILE, json.dumps({"todo_rev": v}))
-        return v[dev_id]
+        nxt = int(v.get(dev_id, 0)) + 1
+        set_todo_rev(dev_id, nxt)
+        return nxt
 
 
 def validate_todos(doc):
@@ -980,6 +1008,16 @@ class Handler(SimpleHTTPRequestHandler):
                     rev = bump_todo_rev(dev)
                     out["rev"] = rev
                     atomic_write(todos_path(dev), json.dumps(out, ensure_ascii=False, indent=2))
+                    # 口令组：同口令的其他设备写入同一份待办并同步 rev，
+                    # 它们的平板经 /api/check 发现变化后各拉取一次即一致
+                    for gid in token_group(dev):
+                        if gid == dev:
+                            continue
+                        try:
+                            atomic_write(todos_path(gid), json.dumps(out, ensure_ascii=False, indent=2))
+                            set_todo_rev(gid, rev)
+                        except Exception:
+                            pass
                 return self._send_json({"ok": True, "rev": rev})
             # /api/config
             dev = self._resolve_dev(a)
@@ -998,6 +1036,14 @@ class Handler(SimpleHTTPRequestHandler):
                     cfg[k] = doc[k]
             cfg["rev"] = int(cfg.get("rev", 0)) + 1
             atomic_write(config_path(dev), json.dumps(cfg, ensure_ascii=False, indent=2))
+            # 口令组：同口令的其他设备写入同一份配置（同 rev），一次推送全组生效
+            for gid in token_group(dev):
+                if gid == dev:
+                    continue
+                try:
+                    atomic_write(config_path(gid), json.dumps(cfg, ensure_ascii=False, indent=2))
+                except Exception:
+                    pass
             return self._send_json({"ok": True, "rev": cfg["rev"]})
         except ValueError as e:
             return self._send_json({"error": str(e)}, 400)
