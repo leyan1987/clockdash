@@ -632,7 +632,9 @@ def _fetch_amap(key, adcode):
     # 高德实况与预报是互斥返回：extensions=base 才有 lives，extensions=all
     # 才有 forecasts（官方文档：两者各自"仅在请求对应类型时有返回"）。
     # 一次 all 请求里取不到 lives，必须分别请求再合并，否则实况+预报全挂。
-    base_url = ("https://api.amap.com/v3/weather/weatherInfo?city=%s&key=%s"
+    # 注意必须是 restapi.amap.com（官方 API 域名）。api.amap.com 是主站域名，
+    # API 路径会 302 重定向到错误页，请求必然失败退回 Open-Meteo。
+    base_url = ("https://restapi.amap.com/v3/weather/weatherInfo?city=%s&key=%s"
                 "&output=JSON" % (adcode, key))
     live = {}
     casts = []
