@@ -16,7 +16,17 @@
   GET  /api/weather  天气（服务器代理高德/Open-Meteo，带缓存，需口令/会话）
   GET  /api/holidays 法定节假日/调休（代理 holiday-cn，每日缓存，需口令/会话）
   GET  /api/check    数据版本号检查（轻量推送轮询，需口令/会话）
+                     附带 server_time 与服务器主动下发的 notice 留言
   GET  /api/history  历史待办查询（已过期发生时刻+已删除规则归档，需口令/会话）
+  GET  /api/watchdog 设备在线状态 + 看护配置 + 告警历史（仅管理员）
+  POST /api/watchdog 保存看护配置（仅管理员）
+  POST /api/watchdog/test  立即发送一条测试通知（仅管理员）
+  POST /api/message  服务器主动给设备留言，设备下次 /api/check 时收到（需口令/会话）
+
+在线看护：设备每次用 X-Token 访问接口都会更新 last_seen；看门狗线程每 30 秒
+检查一次，超过阈值无通讯即判定失联，主动经 webhook 推送告警（企业微信/钉钉/
+飞书/自定义），恢复时再推一条。服务器无法反向连接 NAT 后的平板，留言通过设备
+下一次轮询带回，属于"离线消息补发"，无需改平板、不增加耗电。
 
 鉴权两通道：
   设备口令 token（平板/链接直达，权限等同管理员）
@@ -54,9 +64,12 @@ STATE_FILE = os.path.join(DATA_DIR, "state.json")
 USERS_FILE = os.path.join(DATA_DIR, "users.json")
 SESSIONS_FILE = os.path.join(DATA_DIR, "sessions.json")
 DEVICES_FILE = os.path.join(DATA_DIR, "devices.json")
+WATCH_CONFIG_FILE = os.path.join(DATA_DIR, "watchdog-config.json")
+WATCH_STATE_FILE = os.path.join(DATA_DIR, "watchdog-state.json")
 
 SESSION_TTL = 30 * 86400   # 网页登录会话有效期 30 天
 _PBKDF2_ITER = 100000      # 口令哈希迭代次数
+_SERVER_START = time.time()  # 用于避免服务刚重启、平板还没首次上报时的误报
 
 REPEATS = ("none", "hourly", "daily", "weekly", "monthly", "yearly")
 
@@ -282,6 +295,263 @@ def atomic_write(path, text):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
     os.replace(tmp, path)
+
+
+# ---------- 在线看护：设备心跳 / 失联告警 / 服务器主动留言 ----------
+#
+# 背景：平板在内网 NAT 后、无固定 IP，服务器无法反向建立连接，所以做不到
+# TCP 意义上的"真推送"。这里用三层组合达到同等效果：
+#   1) 设备每次用 X-Token 访问任意接口 → 记 last_seen（复用现有 5 分钟轮询，零改动）；
+#   2) 看门狗线程定时判定失联 → 服务器主动把告警推到手机（webhook）；
+#   3) 管理员可给设备留言 → 排队等设备下一次 /api/check 带回（离线消息补发）。
+# 若将来要秒级送达，可再加 /api/wait 长轮询，但老平板保持长连接耗电明显，默认不开。
+
+WATCH_DEFAULT = {
+    "enabled": True,
+    "offline_after_min": 15,   # 正常 5 分钟一次 check，15 分钟没来即视为失联
+    "repeat_min": 0,           # 0=只在状态翻转时提醒一次；>0=持续离线时每 N 分钟重复
+    "notify_recover": True,
+    "webhook_type": "wecom",   # wecom / dingtalk / feishu / custom
+    "webhook_url": "",
+}
+
+
+def load_watch_config():
+    c = load_json(WATCH_CONFIG_FILE, {})
+    out = dict(WATCH_DEFAULT)
+    if isinstance(c, dict):
+        for k, v in c.items():
+            if k in WATCH_DEFAULT:
+                out[k] = v
+    # 收敛到合法范围，避免后台误填导致看门狗乱报
+    for k, lo, hi, dft in (("offline_after_min", 6, 1440, 15),
+                           ("repeat_min", 0, 1440, 0)):
+        try:
+            out[k] = max(lo, min(hi, int(out[k])))
+        except (TypeError, ValueError):
+            out[k] = dft
+    out["enabled"] = bool(out["enabled"])
+    out["notify_recover"] = bool(out["notify_recover"])
+    out["webhook_type"] = str(out["webhook_type"] or "wecom")
+    out["webhook_url"] = str(out["webhook_url"] or "").strip()
+    return out
+
+
+def save_watch_config(c):
+    with _SAVE_LOCK:
+        atomic_write(WATCH_CONFIG_FILE, json.dumps(c, ensure_ascii=False, indent=2))
+
+
+def load_watch_state():
+    s = load_json(WATCH_STATE_FILE, None)
+    if not isinstance(s, dict):
+        s = {}
+    for k, v in (("devices", {}), ("alerts", {}), ("messages", {}), ("history", [])):
+        if not isinstance(s.get(k), type(v)):
+            s[k] = v
+    return s
+
+
+def save_watch_state(s):
+    with _SAVE_LOCK:
+        s["history"] = s.get("history", [])[-100:]  # 只留最近 100 条，防止无限增长
+        atomic_write(WATCH_STATE_FILE, json.dumps(s, ensure_ascii=False, indent=2))
+
+
+def touch_device(dev_id, api_path, ip):
+    """设备用 X-Token 访问任意接口都算一次心跳。
+    网页会话访问一律不算，否则管理员打开后台会把掉线的平板刷成在线。"""
+    if not dev_id:
+        return
+    now = time.time()
+    with _SAVE_LOCK:
+        s = load_watch_state()
+        d = s["devices"].setdefault(dev_id, {})
+        d["last_seen"] = now
+        d["last_api"] = api_path
+        d["last_ip"] = ip
+        d.setdefault("first_seen", now)
+        d["hits"] = int(d.get("hits", 0) or 0) + 1
+        save_watch_state(s)
+
+
+def _fmt_duration(sec):
+    sec = int(max(0, sec))
+    if sec < 60:
+        return "%d 秒" % sec
+    if sec < 3600:
+        return "%d 分钟" % (sec // 60)
+    if sec < 86400:
+        return "%d 小时 %d 分钟" % (sec // 3600, (sec % 3600) // 60)
+    return "%d 天 %d 小时" % (sec // 86400, (sec % 86400) // 3600)
+
+
+def _post_webhook(url, wtype, title, text):
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return "未配置合法的 http(s) webhook 地址"
+    content = title + "\n" + text
+    if wtype in ("wecom", "dingtalk"):
+        body = {"msgtype": "text", "text": {"content": content}}
+    elif wtype == "feishu":
+        body = {"msg_type": "text", "content": {"text": content}}
+    else:  # custom：通用 JSON，便于接 n8n / Home Assistant / 自建服务
+        body = {"title": title, "text": text, "source": "ClockDash"}
+    req = urllib.request.Request(
+        url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(req, timeout=8) as r:
+        r.read(2048)
+    return ""
+
+
+def watch_notify(kind, dev_name, text, push=True):
+    """记一条告警历史，并（可选）主动把消息推到 webhook。
+    webhook 在独立线程里发送，网络挂住不会拖住看门狗或 HTTP 请求。"""
+    rec = {"ts": time.time(), "kind": kind, "device": dev_name, "text": text}
+    with _SAVE_LOCK:
+        s = load_watch_state()
+        s["history"].append(rec)
+        save_watch_state(s)
+    title = {"offline": "⚠ 平板失联", "online": "✓ 平板恢复",
+             "test": "测试通知", "message": "服务器留言"}.get(kind, "ClockDash 通知")
+    sys.stderr.write("[watchdog] %s | %s | %s\n" % (title, dev_name, text))
+    if push:
+        c = load_watch_config()
+        if c["webhook_url"]:
+            def _send():
+                try:
+                    err = _post_webhook(c["webhook_url"], c["webhook_type"], title, text)
+                    if err:
+                        sys.stderr.write("[watchdog] webhook: %s\n" % err)
+                except Exception as e:
+                    sys.stderr.write("[watchdog] webhook error: %s\n" % e)
+            threading.Thread(target=_send, daemon=True).start()
+    return rec
+
+
+def watchdog_tick():
+    """每轮扫描所有设备，只在 online↔offline 状态翻转（或到达重复提醒间隔）时告警。"""
+    c = load_watch_config()
+    if not c["enabled"]:
+        return
+    now = time.time()
+    limit = c["offline_after_min"] * 60
+    repeat = c["repeat_min"] * 60
+    events = []
+    with _SAVE_LOCK:
+        s = load_watch_state()
+        changed = False
+        for d in load_devices()["devices"]:
+            dev_id = d.get("id")
+            name = d.get("name") or dev_id
+            last = float(s["devices"].get(dev_id, {}).get("last_seen", 0) or 0)
+            al = s["alerts"].setdefault(dev_id, {})
+            # 服务刚重启且这台设备从未上报过：给它一个完整阈值窗口，别一启动就误报
+            if last <= 0 and (now - _SERVER_START) < limit:
+                continue
+            offline = last <= 0 or (now - last) > limit
+            was = bool(al.get("offline", False))
+            if offline and not was:
+                al.update({"offline": True, "since": now, "last_notify": now})
+                changed = True
+                if last > 0:
+                    text = "「%s」距上次通讯已 %s" % (name, _fmt_duration(now - last))
+                else:
+                    text = "「%s」没有任何上线记录，可能从未成功连上服务器" % name
+                text += "（阈值 %d 分钟）。请检查平板网络、供电与时钟看板是否在运行。" \
+                        % c["offline_after_min"]
+                events.append(("offline", name, text))
+            elif offline and was and repeat > 0 \
+                    and now - float(al.get("last_notify", 0) or 0) > repeat:
+                al["last_notify"] = now
+                changed = True
+                events.append(("offline", name,
+                               "「%s」仍处于失联状态，已持续 %s。"
+                               % (name, _fmt_duration(now - last))))
+            elif not offline and was:
+                since = float(al.get("since", now) or now)
+                al.update({"offline": False, "recovered_at": now})
+                changed = True
+                if c["notify_recover"]:
+                    events.append(("online", name,
+                                   "「%s」已重新上线，中断约 %s。"
+                                   % (name, _fmt_duration(now - since))))
+        # 清掉已过期的留言
+        for k in list(s["messages"].keys()):
+            keep = [m for m in s["messages"][k]
+                    if float(m.get("expires", 0) or 0) > now]
+            if len(keep) != len(s["messages"][k]):
+                changed = True
+            if keep:
+                s["messages"][k] = keep
+            else:
+                del s["messages"][k]
+        if changed:
+            save_watch_state(s)
+    # 锁外再发通知：watch_notify 自己也要写状态文件，避免锁内嵌套等待
+    for kind, name, text in events:
+        threading.Thread(target=watch_notify, args=(kind, name, text), daemon=True).start()
+
+
+def watchdog_loop():
+    # 启动后先等 20 秒，避开服务刚起来时设备尚未发起第一次 check 的窗口
+    time.sleep(20)
+    while True:
+        try:
+            watchdog_tick()
+        except Exception as e:
+            sys.stderr.write("[watchdog] tick error: %s\n" % e)
+        time.sleep(30)
+
+
+def watchdog_status():
+    c = load_watch_config()
+    now = time.time()
+    s = load_watch_state()
+    out = []
+    for d in load_devices()["devices"]:
+        dev_id = d.get("id")
+        info = s["devices"].get(dev_id, {})
+        al = s["alerts"].get(dev_id, {})
+        last = float(info.get("last_seen", 0) or 0)
+        offline = last <= 0 or (now - last) > c["offline_after_min"] * 60
+        out.append({
+            "id": dev_id,
+            "name": d.get("name") or dev_id,
+            "last_seen": last,
+            "last_api": info.get("last_api", ""),
+            "last_ip": info.get("last_ip", ""),
+            "hits": int(info.get("hits", 0) or 0),
+            "age_text": _fmt_duration(now - last) if last > 0 else "从未上线",
+            "online": not offline,
+            "watch_enabled": c["enabled"],
+            "offline_since": float(al.get("since", 0) or 0),
+            "pending_messages": len(s["messages"].get(dev_id, [])),
+        })
+    return {"ok": True, "config": c, "devices": out,
+            "history": list(reversed(s.get("history", [])[-30:])),
+            "server_time": now, "checked_every_sec": 30}
+
+
+def peek_device_notice(dev_id):
+    """取该设备最新一条未过期的服务器留言，随 /api/check 带回（离线消息补发）。
+    不主动删除：平板端目前没有 ack 机制，重复下发直到过期更安全，客户端可用
+    notice.id 自行去重。"""
+    now = time.time()
+    with _SAVE_LOCK:
+        s = load_watch_state()
+        old = s["messages"].get(dev_id, [])
+        msgs = [m for m in old if float(m.get("expires", 0) or 0) > now]
+        if len(msgs) != len(old):
+            if msgs:
+                s["messages"][dev_id] = msgs
+            else:
+                s["messages"].pop(dev_id, None)
+            save_watch_state(s)
+    if not msgs:
+        return None
+    m = msgs[-1]
+    return {"id": m.get("id", ""), "text": m.get("text", ""), "ts": m.get("ts", 0)}
 
 
 def get_todo_rev(dev_id):
@@ -786,6 +1056,11 @@ class Handler(SimpleHTTPRequestHandler):
         if tok:
             dev = device_by_token(tok)
             if dev:
+                # 只有真正的平板请求算心跳：网页后台用同一个设备口令访问时会带
+                # X-Client: web，必须排除，否则管理员打开后台就把离线平板刷成在线。
+                if self.headers.get("X-Client", "") != "web":
+                    touch_device(dev["id"], urlparse(self.path).path,
+                                 self.client_address[0] if self.client_address else "")
                 return {"mode": "device", "role": "admin",
                         "user": dev.get("name", "平板"), "dev": dev["id"]}
             time.sleep(random.uniform(0.2, 0.5))
@@ -884,6 +1159,50 @@ class Handler(SimpleHTTPRequestHandler):
         save_users(users)
         return self._send_json({"ok": True})
 
+    def _handle_watch_config(self, doc):
+        c = load_watch_config()
+        for k in ("enabled", "notify_recover"):
+            if k in doc:
+                c[k] = bool(doc[k])
+        for k in ("offline_after_min", "repeat_min"):
+            if k in doc:
+                try:
+                    c[k] = int(doc[k])
+                except (TypeError, ValueError):
+                    pass
+        if "webhook_type" in doc:
+            c["webhook_type"] = str(doc["webhook_type"] or "wecom")
+        if "webhook_url" in doc:
+            u = str(doc["webhook_url"] or "").strip()
+            if u and not u.lower().startswith(("http://", "https://")):
+                return self._send_json(
+                    {"error": "webhook 地址必须以 http:// 或 https:// 开头"}, 400)
+            c["webhook_url"] = u
+        save_watch_config(c)
+        return self._send_json({"ok": True, "config": load_watch_config()})
+
+    def _handle_message(self, doc, dev):
+        """管理员主动给平板留言：写入队列，等设备下一次 /api/check 取走。"""
+        text = str(doc.get("text", "") or "").strip()[:200]
+        if not text:
+            return self._send_json({"error": "留言内容不能为空"}, 400)
+        try:
+            hours = max(1, min(168, int(doc.get("ttl_hours", 24))))
+        except (TypeError, ValueError):
+            hours = 24
+        now = time.time()
+        m = {"id": secrets.token_hex(6), "text": text, "ts": now,
+             "expires": now + hours * 3600}
+        with _SAVE_LOCK:
+            s = load_watch_state()
+            s["messages"].setdefault(dev, []).append(m)
+            s["messages"][dev] = s["messages"][dev][-10:]
+            save_watch_state(s)
+        # 留言本身不推手机，只进历史，避免发一条公告把管理员手机吵醒
+        watch_notify("message", dev, "已给「%s」留言：%s" % (dev, text), push=False)
+        return self._send_json({"ok": True, "message": m,
+                                "hint": "设备下次检查（约 5 分钟内）即可收到"})
+
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -898,10 +1217,14 @@ class Handler(SimpleHTTPRequestHandler):
         p = urlparse(self.path).path
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
                  "/api/holidays", "/api/check", "/api/users", "/api/devices",
-                 "/api/history"):
+                 "/api/history", "/api/watchdog"):
             a = self._auth()
             if a is None:
                 return self._send_json({"error": "未登录"}, 401)
+            if p == "/api/watchdog":
+                if a.get("role") != "admin":
+                    return self._send_json({"error": "需要管理员权限"}, 403)
+                return self._send_json(watchdog_status())
             if p == "/api/users":
                 if a.get("role") != "admin":
                     return self._send_json({"error": "需要管理员权限"}, 403)
@@ -953,9 +1276,16 @@ class Handler(SimpleHTTPRequestHandler):
                                                    (qs.get("limit") or [300])[0]))
             if p == "/api/check":
                 cfg = load_json(config_path(dev), {})
-                return self._send_json({"ok": True,
-                                        "todo_rev": get_todo_rev(dev),
-                                        "config_rev": int(cfg.get("rev", 0) or 0)})
+                out = {"ok": True,
+                       "todo_rev": get_todo_rev(dev),
+                       "config_rev": int(cfg.get("rev", 0) or 0),
+                       "server_time": int(time.time())}
+                # 服务器"主动推送"给平板的消息：借设备既有的 5 分钟轮询捎带回去，
+                # 设备即使刚刚失联过，一恢复上线就能收到（离线消息补发）。
+                notice = peek_device_notice(dev)
+                if notice:
+                    out["notice"] = notice
+                return self._send_json(out)
             return self._send_json({"ok": True})
         if p == "/":
             p = "/index.html"
@@ -964,12 +1294,14 @@ class Handler(SimpleHTTPRequestHandler):
     def do_POST(self):
         p = urlparse(self.path).path
         if p not in ("/api/todos", "/api/config", "/api/login", "/api/logout",
-                     "/api/users", "/api/devices"):
+                     "/api/users", "/api/devices", "/api/watchdog",
+                     "/api/watchdog/test", "/api/message"):
             return self.send_error(404)
         a = self._auth()
-        if p in ("/api/todos", "/api/config", "/api/users", "/api/devices") and a is None:
+        if p not in ("/api/login", "/api/logout") and a is None:
             return self._send_json({"error": "未登录"}, 401)
-        if p in ("/api/users", "/api/devices") and a.get("role") != "admin":
+        if p in ("/api/users", "/api/devices", "/api/watchdog",
+                 "/api/watchdog/test") and a.get("role") != "admin":
             return self._send_json({"error": "需要管理员权限"}, 403)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
@@ -985,6 +1317,16 @@ class Handler(SimpleHTTPRequestHandler):
                 if sid:
                     drop_session(sid)
                 return self._send_json({"ok": True})
+            if p == "/api/watchdog":
+                return self._handle_watch_config(doc)
+            if p == "/api/watchdog/test":
+                watch_notify("test", "服务器", "测试通知：在线看护已生效，webhook 通道可用。")
+                return self._send_json({"ok": True, "hint": "已写入告警历史并尝试推送 webhook"})
+            if p == "/api/message":
+                dev = self._resolve_dev(a)
+                if dev is None:
+                    return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
+                return self._handle_message(doc, dev)
             if p == "/api/users":
                 return self._handle_users(doc)
             if p == "/api/devices":
@@ -1113,6 +1455,9 @@ def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     token = read_token()
     srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    # 在线看护：独立线程，不占用 HTTP 请求线程；daemon 随主进程退出
+    threading.Thread(target=watchdog_loop, name="clockdash-watchdog",
+                     daemon=True).start()
     print("=" * 60)
     print(" 时钟看板后台已启动，端口 %d" % port)
     print(" 手机打开设置页: http://<本机IP>:%d/?token=%s" % (port, token))

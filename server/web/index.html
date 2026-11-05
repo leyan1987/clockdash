@@ -81,6 +81,59 @@
     <div class="hint" id="devHint"></div>
   </section>
 
+  <!-- ============ 在线看护：设备心跳 / 失联告警 / 服务器主动留言 ============ -->
+  <section id="secWatch" hidden>
+    <h2>在线看护 <small>平板长时间不通讯时，服务器主动告警</small></h2>
+    <div id="watchList"></div>
+    <div class="hint">平板每 5 分钟向服务器报一次到，超过设定时间没来即判定失联。
+      服务器在公网、平板在内网，无法反向连接平板，所以告警推送到你配置的机器人；
+      发给平板的留言则在它下一次轮询时带回（离线消息补发）。</div>
+
+    <div class="linecheck"><input type="checkbox" id="wEnabled">
+      <label for="wEnabled" style="margin:0;color:var(--fg)">启用失联看护</label></div>
+    <div class="row">
+      <div><label>失联阈值（分钟，最小 6）</label>
+        <input type="number" id="wAfter" min="6" max="1440" value="15"></div>
+      <div><label>持续失联重复提醒（分钟，0=只报一次）</label>
+        <input type="number" id="wRepeat" min="0" max="1440" value="0"></div>
+    </div>
+    <div class="linecheck"><input type="checkbox" id="wRecover">
+      <label for="wRecover" style="margin:0;color:var(--fg)">恢复上线时也通知一次</label></div>
+
+    <div class="row" style="margin-top:12px">
+      <div style="flex:0 0 145px"><label>通知渠道</label>
+        <select id="wType">
+          <option value="wecom">企业微信机器人</option>
+          <option value="dingtalk">钉钉机器人</option>
+          <option value="feishu">飞书机器人</option>
+          <option value="custom">自定义 JSON</option>
+        </select></div>
+      <div><label>Webhook 地址（留空则只记录在本页历史）</label>
+        <input id="wUrl" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."></div>
+    </div>
+    <div class="hint">钉钉/飞书若设置了自定义关键词，请把关键词设为「平板」或「ClockDash」；
+      加签型机器人暂不支持。自定义渠道会 POST {"title":..., "text":...} JSON。</div>
+    <div class="btnrow">
+      <button class="primary" id="btnWatchSave">保存看护设置</button>
+      <button id="btnWatchTest">发送测试通知</button>
+      <button id="btnWatchRefresh">刷新状态</button>
+    </div>
+
+    <div style="border-top:1px dashed var(--line); margin-top:16px; padding-top:8px">
+      <label>给当前平板留言（服务器主动下发，约 5 分钟内到达）</label>
+      <div class="row">
+        <input id="wMsg" placeholder="例如：晚上记得关掉客厅的平板" maxlength="200">
+        <button class="primary" id="btnMsgSend" style="flex:0 0 90px">发送</button>
+      </div>
+      <div class="hint">留言保存在服务器上，平板即使此刻离线，恢复后第一次检查也会收到（保留 24 小时）。</div>
+    </div>
+
+    <div style="margin-top:14px">
+      <label>告警 / 通知历史（最近 30 条）</label>
+      <div id="watchLog" style="max-height:220px; overflow:auto"></div>
+    </div>
+  </section>
+
   <!-- ============ 待办管理 ============ -->
   <section>
     <h2>待办管理<small id="dirty" class="dirty">有未保存的修改</small></h2>
@@ -244,7 +297,10 @@
     return path + (path.indexOf("?") >= 0 ? "&" : "?") + "devid=" + encodeURIComponent(curDev);
   }
   function api(path, method, body) {
-    var opt = { method: method || "GET", headers: { "Content-Type": "application/json" } };
+    /* X-Client: web —— 服务端据此把网页后台访问排除在"平板心跳"之外，
+       否则管理员打开后台就会把已经掉线的平板刷成在线 */
+    var opt = { method: method || "GET",
+                headers: { "Content-Type": "application/json", "X-Client": "web" } };
     var url = path;
     if (auth.mode === "token") {
       var sep = path.indexOf("?") >= 0 ? "&" : "?";
@@ -575,6 +631,13 @@
     $("btnLogout").hidden = false;
     $("secUsers").hidden = auth.role !== "admin";
     $("secDev").hidden = auth.mode !== "session"; // 设备口令模式本身绑定一台设备
+    // 在线看护面板仅管理员登录后台时可见；设备口令页面是给平板扫码配置用的
+    var showWatch = auth.mode === "session" && auth.role === "admin";
+    $("secWatch").hidden = !showWatch;
+    if (showWatch) {
+      loadWatch();
+      if (!watchTimer) watchTimer = setInterval(loadWatch, 30000);
+    }
     $("manualUrl").textContent = location.origin;
     $("manualToken").textContent = auth.mode === "token"
       ? auth.value : "（管理员可在上方“设备”区块查看所选设备的口令）";
@@ -713,6 +776,85 @@
   $("btnHistory").addEventListener("click", loadHistory);
   $("hQ").addEventListener("keydown", function (e) { if (e.key === "Enter") loadHistory(); });
   $("hDays").addEventListener("change", loadHistory);
+
+  /* ---------- 在线看护 ---------- */
+  var watchTimer = null;
+  function fmtTs(ts) {
+    if (!ts) return "—";
+    var d = new Date(ts * 1000);
+    function p(n) { return ("0" + n).slice(-2); }
+    return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours())
+      + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+  }
+  function renderWatch(j) {
+    var c = j.config || {};
+    $("wEnabled").checked = !!c.enabled;
+    $("wAfter").value = c.offline_after_min || 15;
+    $("wRepeat").value = c.repeat_min || 0;
+    $("wRecover").checked = c.notify_recover !== false;
+    $("wType").value = c.webhook_type || "wecom";
+    $("wUrl").value = c.webhook_url || "";
+
+    var html = "", devs = j.devices || [];
+    for (var i = 0; i < devs.length; i++) {
+      var d = devs[i];
+      var badge = !d.watch_enabled ? '<span class="hint">看护已关闭</span>'
+        : (d.age_text === "从未上线" ? '<span class="hint">等待首次上报</span>'
+           : (d.online ? '<span class="ok">● 在线</span>' : '<span class="err">● 失联</span>'));
+      html += '<div class="todo"><div class="t-main"><div class="t-title">'
+        + esc(d.name) + " " + badge + '</div><div class="t-meta">'
+        + "距上次通讯 " + esc(d.age_text)
+        + (d.last_api ? " · " + esc(d.last_api) : "")
+        + (d.last_ip ? " · " + esc(d.last_ip) : "")
+        + (d.pending_messages ? " · 待送达留言 " + d.pending_messages + " 条" : "")
+        + '</div></div></div>';
+    }
+    $("watchList").innerHTML = html || '<div class="hint">暂无设备</div>';
+
+    var kindTxt = { offline: "失联", online: "恢复", test: "测试", message: "留言" };
+    var log = "", hist = j.history || [];
+    for (var k = 0; k < hist.length; k++) {
+      var h = hist[k];
+      log += '<div class="todo"><div class="t-main"><div class="t-title" style="font-weight:400">'
+        + "[" + (kindTxt[h.kind] || esc(h.kind)) + "] " + esc(h.device) + '</div>'
+        + '<div class="t-meta">' + fmtTs(h.ts) + " · " + esc(h.text) + '</div>'
+        + '</div></div>';
+    }
+    $("watchLog").innerHTML = log || '<div class="hint">暂无告警记录</div>';
+  }
+  function loadWatch() {
+    return api("/api/watchdog").then(renderWatch)
+      .catch(function (e) {
+        $("watchList").innerHTML = '<span class="err">' + esc(e.message) + '</span>';
+      });
+  }
+  $("btnWatchRefresh").addEventListener("click", loadWatch);
+  $("btnWatchSave").addEventListener("click", function () {
+    api("/api/watchdog", "POST", {
+      enabled: $("wEnabled").checked,
+      offline_after_min: +$("wAfter").value,
+      repeat_min: +$("wRepeat").value,
+      notify_recover: $("wRecover").checked,
+      webhook_type: $("wType").value,
+      webhook_url: $("wUrl").value.trim()
+    }).then(function () { toast("看护设置已保存 ✓"); loadWatch(); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("btnWatchTest").addEventListener("click", function () {
+    api("/api/watchdog/test", "POST", {})
+      .then(function () { toast("测试通知已发出，请查看手机 / 下方历史"); setTimeout(loadWatch, 600); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("btnMsgSend").addEventListener("click", function () {
+    var text = $("wMsg").value.trim();
+    if (!text) { toast("请先填写留言内容"); return; }
+    api(dp("/api/message"), "POST", { text: text, ttl_hours: 24 })
+      .then(function () { $("wMsg").value = ""; toast("已发送 ✓ 平板约 5 分钟内收到"); loadWatch(); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("wMsg").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") $("btnMsgSend").click();
+  });
 
   init();
 })();
