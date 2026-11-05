@@ -138,6 +138,64 @@ public final class Store {
         return new File(c.getFilesDir(), WEATHER_CACHE).lastModified();
     }
 
+    // ---------- 同步兜底（闹钟与界面心跳共用） ----------
+
+    /**
+     * 轻量版本号检查：true 表示服务器有待办/配置变更，调用方应做一次全量同步。
+     * 只包含几十字节的 /api/check 请求，失败一律返回 false（不改动任何缓存）。
+     * 必须在后台线程调用。
+     */
+    public static boolean pushChanged(Context c) {
+        String base = serverBase(c);
+        if (base == null) return false;
+        String s = HttpUtil.get(base + "/api/check", Prefs.get(c, Prefs.K_TOKEN, ""), 8000);
+        if (s == null) return false;
+        try {
+            JSONObject o = new JSONObject(s);
+            if (!o.optBoolean("ok", false)) return false;
+            return o.optInt("todo_rev", 0) != Prefs.getInt(c, Prefs.K_TODO_REV, 0)
+                    || o.optInt("config_rev", 0) != Prefs.getInt(c, Prefs.K_REV, 0);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * 过期数据自愈：待办/天气缓存超过 maxAgeMs 就重拉一次（maxAgeMs &lt;= 0 表示强制全量）。
+     * 返回 true 表示至少有一个缓存文件被真正写新，调用方据此刷新界面。
+     * 完全不依赖 AlarmManager / AsyncTask，可在任意后台线程或界面心跳线程调用。
+     * 注意：内部每个请求都有连接 + 读取超时，单次最坏几十秒，不会永久挂住。
+     */
+    public static boolean healStaleData(Context c, long maxAgeMs) {
+        if (serverBase(c) == null) return false;
+        long now = System.currentTimeMillis();
+        boolean todoStale = maxAgeMs <= 0 || now - todosCacheTime(c) > maxAgeMs;
+        boolean wxStale = maxAgeMs <= 0 || now - weatherCacheTime(c) > maxAgeMs;
+        if (!todoStale && !wxStale) return false;
+        if (maxAgeMs > 0) {
+            // 过期自愈属于兜底路径：闹钟和界面心跳可能同时调用，且断网时每个请求
+            // 都要等 8~12 秒超时。共享 10 分钟退避，避免老设备被反复唤醒拖垮。
+            // maxAgeMs<=0 是版本变化后的强制全量同步，不受退避限制。
+            long last = Prefs.getLong(c, Prefs.K_LAST_HEAL, 0);
+            if (now - last < 10L * 60000L) return false;
+            Prefs.putLong(c, Prefs.K_LAST_HEAL, now);
+        }
+        boolean changed = false;
+        if (todoStale) {
+            long before = todosCacheTime(c);
+            fetchTodos(c);        // 成功会写缓存并更新 todo_rev
+            fetchConfigPush(c);   // 成功会更新 config_rev
+            fetchHolidays(c);
+            if (todosCacheTime(c) != before) changed = true;
+        }
+        if (wxStale) {
+            long before = weatherCacheTime(c);
+            fetchWeather(c);
+            if (weatherCacheTime(c) != before) changed = true;
+        }
+        return changed;
+    }
+
     // ---------- 法定节假日 ----------
 
     /** 从服务器同步放假/调休数据（服务器每天缓存 holiday-cn），成功写入本地缓存 */

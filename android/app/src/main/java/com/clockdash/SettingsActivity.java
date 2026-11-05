@@ -2,9 +2,9 @@ package com.clockdash;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.Context;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.os.AsyncTask;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
@@ -166,26 +166,41 @@ public class SettingsActivity extends Activity {
             return;
         }
         toast("正在连接 " + base + " …");
-        new AsyncTask<Void, Void, String>() {
+        final SettingsActivity activity = this;
+        final Context app = getApplicationContext();
+        // 独立线程：安卓 4.x 的 AsyncTask 是全进程串行队列，一次挂住会让测试连接永远转圈
+        new Thread(new Runnable() {
             @Override
-            protected String doInBackground(Void... params) {
-                String s = HttpUtil.get(base + "/api/todos", Prefs.get(SettingsActivity.this, Prefs.K_TOKEN, ""), 12000);
-                if (s == null) return null;
-                List<Todo> l = Store.parseTodos(s);
-                return l == null ? "格式错误" : String.valueOf(l.size());
-            }
-
-            @Override
-            protected void onPostExecute(String result) {
-                if (result == null) {
-                    toast("连接失败：检查地址/口令/网络（只能用 http://）");
-                } else if ("格式错误".equals(result)) {
-                    toast("已连上，但待办数据格式不对");
-                } else {
-                    toast("连接成功，共 " + result + " 条待办 ✓");
+            public void run() {
+                String result;
+                try {
+                    String s = HttpUtil.get(base + "/api/todos",
+                            Prefs.get(app, Prefs.K_TOKEN, ""), 12000);
+                    if (s == null) {
+                        result = null;
+                    } else {
+                        List<Todo> l = Store.parseTodos(s);
+                        result = l == null ? "格式错误" : String.valueOf(l.size());
+                    }
+                } catch (Throwable ignored) {
+                    result = null;
                 }
+                final String r = result;
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (activity.isFinishing()) return;
+                        if (r == null) {
+                            toast("连接失败：检查地址/口令/网络（只能用 http://）");
+                        } else if ("格式错误".equals(r)) {
+                            toast("已连上，但待办数据格式不对");
+                        } else {
+                            toast("连接成功，共 " + r + " 条待办 ✓");
+                        }
+                    }
+                });
             }
-        }.execute();
+        }, "clockdash-test").start();
     }
 
     @Override

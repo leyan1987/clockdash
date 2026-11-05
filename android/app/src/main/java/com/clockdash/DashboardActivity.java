@@ -11,7 +11,6 @@ import android.net.Uri;
 import android.provider.Settings;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
-import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -52,6 +51,12 @@ public class DashboardActivity extends Activity {
     private static final SimpleDateFormat HM_FMT = new SimpleDateFormat("HH:mm", Locale.US);
     private static final SimpleDateFormat DAY_KEY_FMT = new SimpleDateFormat("yyyyMMdd", Locale.US);
     private static final SimpleDateFormat YMD_FMT = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
+    /** 超过 15 分钟没收到任何闹钟广播，判定后台闹钟停摆，由界面接管同步 */
+    private static final long ALARM_STALL_MS = 15L * 60000L;
+    /** 缓存超过 90 分钟没更新就补拉（服务器天气刷新周期 60 分钟，留 30 分钟余量） */
+    private static final long DATA_STALE_MS = 90L * 60000L;
+    /** 心跳发起网络动作的最小间隔，与正常轻量检查的 5 分钟节奏一致 */
+    private static final long HEAL_NET_GAP_MS = 5L * 60000L;
 
     private TextView tvClock, tvDate, tvTemp, tvCond, tvCity, tvMeta, tvStatus, tvSyncNote;
     private TextView tvCalTitle, tvCalYear;
@@ -83,7 +88,7 @@ public class DashboardActivity extends Activity {
     private boolean mNightOnly = false;
     private int mCornerTaps = 0;
     private long mLastCornerTap = 0;
-    private boolean mSyncing = false;
+    private volatile boolean mSyncing = false;
     private String mVersion = "";
     /** 运行时权限引导：一次启动只走一遍完整检查 */
     private boolean mPermPassDone = false;
@@ -91,6 +96,16 @@ public class DashboardActivity extends Activity {
     private boolean mNotifAsked = false;
     /** 最近一次待办列表重排的时间（诊断用，显示在状态栏） */
     private String mListBuiltAt = "";
+    /** 界面心跳接管：防止同时起多个补拉线程 */
+    private volatile boolean mHealing = false;
+    /** 上次心跳判定的时间（判定本身很轻，每分钟一次） */
+    private long mLastHeartbeatCheckMs = 0;
+    /** 上次心跳真正发起网络请求的时间（失败也要退避，避免断网时反复重连） */
+    private long mLastHealNetMs = 0;
+    /** 当前是否处于“闹钟停摆、界面接管”状态（显示在状态栏便于确认） */
+    private boolean mHeartbeatActive = false;
+    /** 最后一次收到闹钟广播的 HH:mm，未收到过则为“从未” */
+    private String mLastAlarmText = "从未";
 
     private final Handler mHandler = new Handler();
 
@@ -137,6 +152,9 @@ public class DashboardActivity extends Activity {
                         Log.e(TAG, "tick30", e);
                     }
                 }
+                // 界面心跳：完全不依赖 AlarmManager / BroadcastReceiver / AsyncTask，
+                // 只要时钟还在走就会执行，是后台闹钟整体停摆时的最后一道兜底
+                maybeHeartbeatSync();
             } catch (Exception e) {
                 Log.e(TAG, "tick", e);
             }
@@ -343,7 +361,11 @@ public class DashboardActivity extends Activity {
 
     // ---------- 数据 ----------
 
-    /** 拉取服务器数据（后台）并刷新界面 */
+    /**
+     * 拉取服务器数据并刷新界面。
+     * 用独立 Thread 而不是 AsyncTask：安卓 4.x 的 AsyncTask 是全进程单线程串行队列，
+     * 只要有一次请求在 DNS/连接阶段挂住，onResume 的同步也会跟着永远排不上队。
+     */
     private void syncNow() {
         if (mSyncing || Store.serverBase(this) == null) {
             updateStatus();
@@ -351,23 +373,100 @@ public class DashboardActivity extends Activity {
         }
         mSyncing = true;
         final DashboardActivity activity = this;
-        new AsyncTask<Void, Void, Boolean>() {
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
             @Override
-            protected Boolean doInBackground(Void... params) {
-                boolean ok = Store.fetchTodos(activity) != null;
-                Store.fetchWeather(activity);
-                boolean pushed = Store.fetchConfigPush(activity);
-                Store.fetchHolidays(activity);
-                return ok || pushed ? Boolean.TRUE : Boolean.FALSE;
+            public void run() {
+                try {
+                    Store.fetchTodos(app);
+                    Store.fetchWeather(app);
+                    Store.fetchConfigPush(app);
+                    Store.fetchHolidays(app);
+                } catch (Throwable ignored) {
+                } finally {
+                    mSyncing = false;
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (activity.isFinishing()) return;
+                            try {
+                                activity.refreshAll(true);
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+                }
             }
+        }, "clockdash-sync-now").start();
+    }
 
+    /**
+     * 界面心跳：每秒随时钟 tick 调用，内部每分钟判定一次。
+     * 触发条件（满足其一即接管）：
+     *   1) 超过 15 分钟没有任何闹钟广播到达 —— 后台闹钟整体停摆；
+     *   2) 天气或待办缓存超过 90 分钟没更新 —— 数据过期。
+     * 网络动作最多每 5 分钟一次，与正常闹钟的检查节奏一致，不给老设备增加负担。
+     */
+    private void maybeHeartbeatSync() {
+        long now = System.currentTimeMillis();
+        if (now - mLastHeartbeatCheckMs < 60000L) return;
+        mLastHeartbeatCheckMs = now;
+        if (Store.serverBase(this) == null) return;
+
+        long lastAlarm = Prefs.getLong(this, Prefs.K_LAST_ALARM, 0);
+        boolean stalled = lastAlarm == 0 || now - lastAlarm > ALARM_STALL_MS;
+        boolean stale = now - Store.weatherCacheTime(this) > DATA_STALE_MS
+                || now - Store.todosCacheTime(this) > DATA_STALE_MS;
+        mHeartbeatActive = stalled;
+        mLastAlarmText = lastAlarm == 0 ? "从未" : HM_FMT.format(new Date(lastAlarm));
+        if (!stalled && !stale) return;
+        if (mHealing || mSyncing) return;
+        if (now - mLastHealNetMs < HEAL_NET_GAP_MS) return;
+        mLastHealNetMs = now;
+        startHealing(stalled, stale);
+    }
+
+    /** 心跳补拉：独立线程，绝不占用 UI 线程，也不经过任何闹钟/广播队列 */
+    private void startHealing(final boolean checkPush, final boolean staleData) {
+        mHealing = true;
+        final DashboardActivity activity = this;
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
             @Override
-            protected void onPostExecute(Boolean ok) {
-                mSyncing = false;
-                refreshAll(true);
-                AlarmScheduler.scheduleRemindersAsync(activity);
+            public void run() {
+                boolean changed = false;
+                try {
+                    // 闹钟停摆时由界面接管轻量版本检查，保证推送仍能及时到达
+                    boolean push = checkPush && Store.pushChanged(app);
+                    if (push || staleData) {
+                        // 有版本变化则强制全量；仅过期则按 90 分钟阈值补拉
+                        Store.healStaleData(app, push ? 0 : DATA_STALE_MS);
+                    }
+                    if (checkPush) {
+                        // 即使数据恰好还新鲜也要重注册：提醒用的是一次性精确闹钟，
+                        // 系统清掉闹钟后不重排就会一直漏提醒。schedulePeriodic 是覆盖式注册，
+                        // 重复调用不会产生多个闹钟。
+                        AlarmScheduler.schedulePeriodic(app);
+                    }
+                    changed = true; // 刷新界面，让状态栏显示接管状态与最新缓存时间
+                } catch (Throwable ignored) {
+                } finally {
+                    mHealing = false;
+                    if (changed) {
+                        activity.runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (activity.isFinishing()) return;
+                                try {
+                                    activity.refreshAll(true);
+                                } catch (Throwable ignored) {
+                                }
+                            }
+                        });
+                    }
+                }
             }
-        }.execute();
+        }, "clockdash-heal").start();
     }
 
     /** 从缓存重读并重绘（sync 后 force=true，平时在待办或天气缓存变化时重绘） */
@@ -396,7 +495,8 @@ public class DashboardActivity extends Activity {
         String wx = wt == 0 ? "" : " · 天气 "
                 + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(wt));
         String extra = " · 列于 " + (mListBuiltAt.length() == 0 ? "--:--" : mListBuiltAt)
-                + wx + " · v" + mVersion;
+                + wx + (mHeartbeatActive ? " · 闹钟停于 " + mLastAlarmText + " · 心跳接管" : "")
+                + " · v" + mVersion;
         if (Store.serverBase(this) == null) {
             tvStatus.setText("未配置服务器：连点右上角三次进入设置" + extra);
             tvStatus.setTextColor(getResources().getColor(R.color.amber));

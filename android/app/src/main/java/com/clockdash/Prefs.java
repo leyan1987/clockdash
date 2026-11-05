@@ -24,6 +24,10 @@ public final class Prefs {
     public static final String K_SCHEDULED = "scheduled_alarms";
     public static final String K_STAY_ON = "stay_on_plugged";
     public static final String K_AUTO_BOOT = "auto_boot_open";
+    /** 最后一次收到任意闹钟广播的时间：界面据此判断后台闹钟是否已停摆并接管同步 */
+    public static final String K_LAST_ALARM = "last_alarm_ms";
+    /** 最后一次过期自愈尝试的时间：断网时给所有调用方共享退避，避免反复超时重连 */
+    public static final String K_LAST_HEAL = "last_heal_ms";
 
     private static final String NAME = "clockdash";
 
@@ -48,6 +52,14 @@ public final class Prefs {
 
     public static void putBool(Context c, String key, boolean value) {
         sp(c).edit().putBoolean(key, value).apply();
+    }
+
+    public static long getLong(Context c, String key, long def) {
+        return sp(c).getLong(key, def);
+    }
+
+    public static void putLong(Context c, String key, long value) {
+        sp(c).edit().putLong(key, value).apply();
     }
 
     public static int getInt(Context c, String key, int def) {

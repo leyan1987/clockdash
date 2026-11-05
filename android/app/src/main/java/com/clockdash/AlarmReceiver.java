@@ -6,11 +6,8 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.os.AsyncTask;
 import android.os.Build;
 import android.os.PowerManager;
-
-import org.json.JSONObject;
 
 /** 闹钟与同步的接收器 */
 public class AlarmReceiver extends BroadcastReceiver {
@@ -19,6 +16,9 @@ public class AlarmReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(final Context context, Intent intent) {
+        // 记录“后台闹钟还活着”的时间戳：界面每秒心跳据此判断是否要接管同步。
+        // 放在最前面，任何一次闹钟到达（含提醒）都算数。
+        Prefs.putLong(context, Prefs.K_LAST_ALARM, System.currentTimeMillis());
         String action = intent.getAction();
         if (AlarmScheduler.ACTION_FIRE.equals(action)) {
             String title = intent.getStringExtra("title");
@@ -51,85 +51,58 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
 
         if (AlarmScheduler.ACTION_CHECK.equals(action)) {
-            // 轻量推送检查：只拉版本号，有变化才做完整同步
+            // 轻量推送检查：只拉版本号，有变化才做完整同步。
+            // 用独立后台线程，不走 AsyncTask 的全局串行队列：安卓 4.x 上
+            // 某次网络请求挂住（DNS 无超时）会把后续所有闹钟任务堵死。
             acquireLock(context);
             final Context app = context.getApplicationContext();
-            new AsyncTask<Void, Void, Boolean>() {
+            new Thread(new Runnable() {
                 @Override
-                protected Boolean doInBackground(Void... params) {
-                    String base = Store.serverBase(app);
-                    if (base == null) return Boolean.FALSE;
-                    String s = HttpUtil.get(base + "/api/check",
-                            Prefs.get(app, Prefs.K_TOKEN, ""), 8000);
-                    if (s == null) return Boolean.FALSE;
+                public void run() {
                     try {
-                        JSONObject o = new JSONObject(s);
-                        if (!o.optBoolean("ok", false)) return Boolean.FALSE;
-                        boolean changed = o.optInt("todo_rev", 0) != Prefs.getInt(app, Prefs.K_TODO_REV, 0)
-                                || o.optInt("config_rev", 0) != Prefs.getInt(app, Prefs.K_REV, 0);
-                        if (!changed) {
-                            // 天气自愈：天气闹钟丢失/网络长期断开恢复后，缓存超过
-                            // 2 小时未更新就借这次 check 补拉一次，不再依赖单一闹钟
-                            long wxAge = System.currentTimeMillis() - Store.weatherCacheTime(app);
-                            if (wxAge > 2L * 3600000L) {
-                                Store.fetchWeather(app);
-                            }
-                            return Boolean.FALSE;
+                        if (Store.serverBase(app) == null) return;
+                        if (Store.pushChanged(app)) {
+                            // 版本有变化：全量同步（含天气，配置可能换了城市/位置）
+                            Store.healStaleData(app, 0);
+                            AlarmScheduler.schedulePeriodic(app);
+                        } else {
+                            // 版本无变化、甚至 /api/check 超时失败，都不影响过期自愈：
+                            // 缓存超过 90 分钟就直接补拉，不再依赖 rev 是否变化
+                            Store.healStaleData(app, 90L * 60000L);
                         }
-                        Store.fetchTodos(app);
-                        Store.fetchConfigPush(app);
-                        Store.fetchHolidays(app);
-                        // 配置变化可能换了城市/位置，顺带刷新天气，免去等下一个天气闹钟
-                        Store.fetchWeather(app);
-                        return Boolean.TRUE;
-                    } catch (Exception e) {
-                        return Boolean.FALSE;
-                    }
-                }
-
-                @Override
-                protected void onPostExecute(Boolean changed) {
-                    try {
-                        if (changed) AlarmScheduler.schedulePeriodic(app);
+                    } catch (Throwable ignored) {
                     } finally {
                         releaseLock();
                     }
                 }
-            }.execute();
+            }, "clockdash-check").start();
             return;
         }
 
-        // SYNC / WX：后台拉取 + 重排
+        // SYNC / WX：后台拉取 + 重排（同样用独立线程，避免串行队列堵塞）
         acquireLock(context);
         final boolean wantTodos = AlarmScheduler.ACTION_SYNC.equals(action);
         final Context app = context.getApplicationContext();
-        new AsyncTask<Void, Void, Void>() {
+        new Thread(new Runnable() {
             @Override
-            protected Void doInBackground(Void... params) {
-                if (wantTodos) {
-                    Store.fetchTodos(app);
-                    Store.fetchConfigPush(app);
-                    Store.fetchHolidays(app);
-                } else {
-                    Store.fetchWeather(app);
-                }
-                return null;
-            }
-
-            @Override
-            protected void onPostExecute(Void result) {
+            public void run() {
                 try {
                     if (wantTodos) {
+                        Store.fetchTodos(app);
+                        Store.fetchConfigPush(app);
+                        Store.fetchHolidays(app);
                         // 推送配置可能改了刷新间隔，整体重排
                         AlarmScheduler.schedulePeriodic(app);
                     } else {
+                        Store.fetchWeather(app);
                         AlarmScheduler.scheduleRemindersAsync(app);
                     }
+                } catch (Throwable ignored) {
                 } finally {
                     releaseLock();
                 }
             }
-        }.execute();
+        }, "clockdash-sync").start();
     }
     private void postNotification(Context c, String title, long occ, boolean sound, boolean popupOk) {
         try {
