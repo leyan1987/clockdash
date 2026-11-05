@@ -71,6 +71,8 @@ public class AlarmReceiver extends BroadcastReceiver {
                         Store.fetchTodos(app);
                         Store.fetchConfigPush(app);
                         Store.fetchHolidays(app);
+                        // 配置变化可能换了城市/位置，顺带刷新天气，免去等下一个天气闹钟
+                        Store.fetchWeather(app);
                         return Boolean.TRUE;
                     } catch (Exception e) {
                         return Boolean.FALSE;

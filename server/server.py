@@ -601,20 +601,33 @@ def _amap_wind(direction, power):
 
 
 def _fetch_amap(key, adcode):
-    url = ("https://api.amap.com/v3/weather/weatherInfo?city=%s&key=%s"
-           "&extensions=all&output=JSON" % (adcode, key))
-    doc = _http_json(url)
-    if str(doc.get("status")) != "1" or not doc.get("lives"):
-        raise ValueError("高德返回: %s" % doc.get("info", "未知错误"))
-    live = doc["lives"][0]
+    # 高德实况与预报是互斥返回：extensions=base 才有 lives，extensions=all
+    # 才有 forecasts（官方文档：两者各自"仅在请求对应类型时有返回"）。
+    # 一次 all 请求里取不到 lives，必须分别请求再合并，否则实况+预报全挂。
+    base_url = ("https://api.amap.com/v3/weather/weatherInfo?city=%s&key=%s"
+                "&output=JSON" % (adcode, key))
+    live = {}
     casts = []
-    fcs = doc.get("forecasts") or []
-    if fcs:
-        for c in fcs[0].get("casts", []):
-            casts.append({"date": c.get("date", ""),
-                          "cond": c.get("dayweather") or c.get("nightweather") or "",
-                          "min": _num(c.get("nighttemp")),
-                          "max": _num(c.get("daytemp"))})
+    try:
+        doc = _http_json(base_url + "&extensions=base")
+        if str(doc.get("status")) == "1" and doc.get("lives"):
+            live = doc["lives"][0]
+    except Exception:
+        pass  # 实况失败不影响预报
+    try:
+        doc = _http_json(base_url + "&extensions=all")
+        if str(doc.get("status")) == "1":
+            fcs = doc.get("forecasts") or []
+            if fcs:
+                for c in fcs[0].get("casts", []):
+                    casts.append({"date": c.get("date", ""),
+                                  "cond": c.get("dayweather") or c.get("nightweather") or "",
+                                  "min": _num(c.get("nighttemp")),
+                                  "max": _num(c.get("daytemp"))})
+    except Exception:
+        pass  # 预报失败不影响实况
+    if not live and not casts:
+        raise ValueError("高德未返回有效数据（实况与预报均失败）")
     return {"ok": True, "source": "amap",
             "city": live.get("city") or "",
             "cond": live.get("weather") or "",
