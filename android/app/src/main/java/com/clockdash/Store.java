@@ -141,23 +141,49 @@ public final class Store {
     // ---------- 同步兜底（闹钟与界面心跳共用） ----------
 
     /**
-     * 轻量版本号检查：true 表示服务器有待办/配置变更，调用方应做一次全量同步。
-     * 只包含几十字节的 /api/check 请求，失败一律返回 false（不改动任何缓存）。
-     * 必须在后台线程调用。
+     * 轻量版本号检查：返回 /api/check 的完整响应（含服务器留言 notice），
+     * 不可达或响应异常返回 null。必须在后台线程调用。
      */
-    public static boolean pushChanged(Context c) {
+    public static JSONObject checkOnce(Context c) {
         String base = serverBase(c);
-        if (base == null) return false;
+        if (base == null) return null;
         String s = HttpUtil.get(base + "/api/check", Prefs.get(c, Prefs.K_TOKEN, ""), 8000);
-        if (s == null) return false;
+        if (s == null) return null;
         try {
             JSONObject o = new JSONObject(s);
-            if (!o.optBoolean("ok", false)) return false;
-            return o.optInt("todo_rev", 0) != Prefs.getInt(c, Prefs.K_TODO_REV, 0)
-                    || o.optInt("config_rev", 0) != Prefs.getInt(c, Prefs.K_REV, 0);
+            return o.optBoolean("ok", false) ? o : null;
         } catch (Exception ignored) {
-            return false;
+            return null;
         }
+    }
+
+    /** 判断 /api/check 响应里版本号是否有变化（resp 为 null 时返回 false） */
+    public static boolean hasChanges(Context c, JSONObject resp) {
+        if (resp == null) return false;
+        return resp.optInt("todo_rev", 0) != Prefs.getInt(c, Prefs.K_TODO_REV, 0)
+                || resp.optInt("config_rev", 0) != Prefs.getInt(c, Prefs.K_REV, 0);
+    }
+
+    /** 兼容旧调用：true 表示服务器有待办/配置变更 */
+    public static boolean pushChanged(Context c) {
+        JSONObject o = checkOnce(c);
+        return o != null && hasChanges(c, o);
+    }
+
+    /** 提取 /api/check 响应里的服务器留言文本（无留言返回 null） */
+    public static String noticeText(JSONObject resp) {
+        if (resp == null) return null;
+        JSONObject n = resp.optJSONObject("notice");
+        if (n == null) return null;
+        String t = n.optString("text", "").trim();
+        return t.length() > 0 ? t : null;
+    }
+
+    /** 留言去重用的 id（同一留言只弹一次，服务器最多重发 3 次） */
+    public static String noticeId(JSONObject resp) {
+        if (resp == null) return null;
+        JSONObject n = resp.optJSONObject("notice");
+        return n == null ? null : n.optString("id", null);
     }
 
     /**
@@ -292,11 +318,21 @@ public final class Store {
         }
     }
 
+    /** 原子写：先写临时文件再改名，老平板掉电/进程被杀不会留下写了一半的缓存
+     *  （缓存损坏会让 parseTodos 返回空，待办全部消失、提醒被清空） */
     public static void writePrivate(Context c, String name, String content) {
         try {
-            FileOutputStream out = c.openFileOutput(name, Context.MODE_PRIVATE);
+            FileOutputStream out = c.openFileOutput(name + ".tmp", Context.MODE_PRIVATE);
             out.write(content.getBytes("UTF-8"));
             out.close();
+            File tmp = new File(c.getFilesDir(), name + ".tmp");
+            File dst = new File(c.getFilesDir(), name);
+            if (!tmp.renameTo(dst)) {
+                // 极少数文件系统 rename 失败：退回直接写
+                FileOutputStream out2 = c.openFileOutput(name, Context.MODE_PRIVATE);
+                out2.write(content.getBytes("UTF-8"));
+                out2.close();
+            }
         } catch (Exception ignored) {
         }
     }

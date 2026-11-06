@@ -9,6 +9,8 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.PowerManager;
 
+import org.json.JSONObject;
+
 /** 闹钟与同步的接收器 */
 public class AlarmReceiver extends BroadcastReceiver {
 
@@ -60,8 +62,18 @@ public class AlarmReceiver extends BroadcastReceiver {
                 @Override
                 public void run() {
                     try {
-                        if (Store.serverBase(app) == null) return;
-                        if (Store.pushChanged(app)) {
+                        JSONObject resp = Store.checkOnce(app);
+                        if (resp == null) return; // 服务器不可达，退避由共享机制处理
+                        // 服务器留言：强提醒通知（同一 id 只弹一次）
+                        String ntext = Store.noticeText(resp);
+                        if (ntext != null) {
+                            String nid = Store.noticeId(resp);
+                            if (nid == null || !nid.equals(Prefs.get(app, Prefs.K_LAST_NOTICE, ""))) {
+                                if (nid != null) Prefs.put(app, Prefs.K_LAST_NOTICE, nid);
+                                showNotice(app, nid, ntext);
+                            }
+                        }
+                        if (Store.hasChanges(app, resp)) {
                             // 版本有变化：全量同步（含天气，配置可能换了城市/位置）
                             Store.healStaleData(app, 0);
                             AlarmScheduler.schedulePeriodic(app);
@@ -148,6 +160,41 @@ public class AlarmReceiver extends BroadcastReceiver {
             }
         } catch (Throwable ignored) {
             // 用 Throwable 兜底：老设备碎片化严重，避免通知环节把进程带崩
+        }
+    }
+
+    /** 服务器留言：强提醒通知（铃声+震动），点按打开看板；同一 id 只弹一次 */
+    public static void showNotice(Context c, String id, String text) {
+        try {
+            if (id != null && id.equals(Prefs.get(c, Prefs.K_LAST_NOTICE, ""))) return;
+            if (id != null) Prefs.put(c, Prefs.K_LAST_NOTICE, id);
+            AlarmScheduler.ensureChannel(c);
+            Intent i = new Intent(c, DashboardActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            PendingIntent pi = PendingIntent.getActivity(c, 103, i, AlarmScheduler.piFlags());
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(c, AlarmScheduler.CHANNEL_ID_LOUD)
+                    : new Notification.Builder(c);
+            if (Build.VERSION.SDK_INT < 26) {
+                b.setPriority(Notification.PRIORITY_HIGH);
+                b.setSound(android.media.RingtoneManager
+                        .getDefaultUri(android.media.RingtoneManager.TYPE_ALARM));
+                b.setVibrate(new long[]{0, 400, 400, 400, 400, 800});
+            }
+            b.setSmallIcon(android.R.drawable.ic_dialog_info);
+            b.setContentTitle("服务器留言");
+            b.setContentText(text);
+            if (Build.VERSION.SDK_INT >= 16) {
+                b.setStyle(new android.app.Notification.BigTextStyle().bigText(text));
+            }
+            b.setContentIntent(pi);
+            b.setAutoCancel(true);
+            Notification n = Build.VERSION.SDK_INT >= 16 ? b.build() : b.getNotification();
+            if (n != null) {
+                ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE))
+                        .notify(2001, n);
+            }
+        } catch (Throwable ignored) {
         }
     }
 

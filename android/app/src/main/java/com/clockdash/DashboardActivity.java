@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.util.Log;
+import org.json.JSONObject;
 import android.text.SpannableString;
 import android.text.Spanned;
 import android.text.style.ForegroundColorSpan;
@@ -437,7 +438,17 @@ public class DashboardActivity extends Activity {
                 boolean changed = false;
                 try {
                     // 闹钟停摆时由界面接管轻量版本检查，保证推送仍能及时到达
-                    boolean push = checkPush && Store.pushChanged(app);
+                    JSONObject resp = checkPush ? Store.checkOnce(app) : null;
+                    boolean push = checkPush && Store.hasChanges(app, resp);
+                    // 顺带处理服务器留言（同一 id 只弹一次）
+                    String ntext = Store.noticeText(resp);
+                    if (ntext != null) {
+                        String nid = Store.noticeId(resp);
+                        if (nid == null || !nid.equals(Prefs.get(app, Prefs.K_LAST_NOTICE, ""))) {
+                            if (nid != null) Prefs.put(app, Prefs.K_LAST_NOTICE, nid);
+                            AlarmReceiver.showNotice(app, nid, ntext);
+                        }
+                    }
                     if (push || staleData) {
                         // 有版本变化则强制全量；仅过期则按 90 分钟阈值补拉
                         Store.healStaleData(app, push ? 0 : DATA_STALE_MS);

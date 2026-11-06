@@ -28,6 +28,8 @@ public final class Prefs {
     public static final String K_LAST_ALARM = "last_alarm_ms";
     /** 最后一次过期自愈尝试的时间：断网时给所有调用方共享退避，避免反复超时重连 */
     public static final String K_LAST_HEAL = "last_heal_ms";
+    /** 最后一次弹过的服务器留言 id：同一留言只弹一次（服务器最多重发 3 次） */
+    public static final String K_LAST_NOTICE = "last_notice_id";
 
     private static final String NAME = "clockdash";
 
