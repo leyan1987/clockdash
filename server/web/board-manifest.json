@@ -1,0 +1,8 @@
+{
+  "name": "时钟看板",
+  "short_name": "看板",
+  "start_url": "board.html",
+  "display": "fullscreen",
+  "background_color": "#0f1419",
+  "theme_color": "#0f1419"
+}
