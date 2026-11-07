@@ -12,7 +12,7 @@
   body { background: #0f1419; color: #edf1f5;
          font-family: Roboto, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
          font-variant-numeric: tabular-nums; }
-  #board { display: grid; grid-template-columns: 34fr 33fr 33fr; height: 100vh; }
+  #board { display: grid; grid-template-columns: 30fr 40fr 30fr; height: 100vh; }
   .col { padding: 2.2vh 2vw; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .col + .col { border-left: 1px solid #232b35; }
   #clock { font-size: clamp(56px, 13vh, 150px); font-weight: 500; line-height: 1.02; letter-spacing: .01em; }
@@ -43,7 +43,8 @@
           justify-content: center; border-radius: 5px; cursor: pointer; min-height: 0; overflow: hidden; }
   .cell:hover { background: #1a222b; }
   .cell .d { font-size: clamp(12px, 2.4vh, 21px); line-height: 1.15; }
-  .cell .l { font-size: clamp(9px, 1.5vh, 13px); line-height: 1.2; color: #5c6a76; }
+  .cell .l { font-size: clamp(9px, 1.5vh, 13px); line-height: 1.2; color: #5c6a76;
+          max-width: 96%; overflow: hidden; white-space: nowrap; }
   .cell .dot { position: absolute; bottom: .8vh; left: 50%; transform: translateX(-50%);
                width: .8vh; height: .8vh; min-width: 4px; min-height: 4px; border-radius: 50%;
                background: #f2b23e; }
