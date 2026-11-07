@@ -125,10 +125,10 @@ public final class AlarmScheduler {
         for (int i = 0; i < todos.size() && count < MAX_REMINDERS; i++) {
             Todo t = todos.get(i);
             if (!t.reminds()) continue;
-            // 窗口从 now 起算（而不是 now+提醒提前量）：否则新建/刚同步到的
-            // 临期待办（发生时刻落在提前量以内）会被整体排除，提醒静默丢失。
-            // 已错过太久的发生由下面 fireAt < now-LATE_GRACE 过滤。
-            long early = now;
+            // 展开窗口回退 5 分钟（LATE_GRACE）：既覆盖新建/刚同步到的临期待办，
+            // 也覆盖刚过点、需要立即补弹提醒的发生时刻。
+            // 超过宽限期的由下面 fireAt < now-LATE_GRACE 过滤。
+            long early = now - LATE_GRACE;
             ArrayList<Long> occs = Recur.expand(t, early, horizon);
             for (int k = 0; k < occs.size() && count < MAX_REMINDERS; k++) {
                 long occ = occs.get(k).longValue();

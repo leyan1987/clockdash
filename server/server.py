@@ -1357,16 +1357,26 @@ class Handler(SimpleHTTPRequestHandler):
                     return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
                 out = validate_todos(doc)
                 with _SAVE_LOCK:
-                    # 归档本次被删除的规则，供历史待办查询
+                    # 归档本次被删除的规则，供历史待办查询。
+                    # 按 id 去重：同一条规则多次删除只保留最后一次归档。
                     old_list = load_json(todos_path(dev), {"todos": []}).get("todos", [])
                     new_ids = {x["id"] for x in out["todos"]}
+                    new_titles = {x["title"] for x in out["todos"]}
                     hist = load_json(history_path(dev), {"deleted": []})
                     for t in old_list:
                         if isinstance(t, dict) and t.get("id") not in new_ids:
-                            r = dict(t)
-                            r["deleted_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                            hist.setdefault("deleted", []).append(r)
-                    hist["deleted"] = hist["deleted"][-_HIST_ARCHIVE:]
+                            exists = next((r for r in hist["deleted"]
+                                           if r.get("id") == t.get("id")), None)
+                            if exists:
+                                exists["deleted_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                            else:
+                                r = dict(t)
+                                r["deleted_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                                hist.setdefault("deleted", []).append(r)
+                    # 规则重新创建（同 id 或同标题）时清除归档，避免历史重复条目
+                    hist["deleted"] = [r for r in hist["deleted"]
+                                       if r.get("id") not in new_ids
+                                       and r.get("title") not in new_titles][-_HIST_ARCHIVE:]
                     atomic_write(history_path(dev), json.dumps(hist, ensure_ascii=False, indent=2))
                     # bump_todo_rev 内部也用 _SAVE_LOCK（RLock 可重入）
                     rev = bump_todo_rev(dev)

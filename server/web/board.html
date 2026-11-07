@@ -639,13 +639,16 @@ var rHideTimer = null;
 
 function rebuildUpcoming() {
   var now = new Date();
+  // 展开窗口回退 5 分钟：刚过点（宽限期内的）发生时刻也在列表里，
+  // checkDue 会立即补弹提醒；超过宽限期的由下面 fireAt 过滤跳过
+  var frm = new Date(now.getTime() - 5 * 60000);
   var horizon = new Date(now.getTime() + 24 * 86400000);
   var rows = [];
   for (var i = 0; i < todos.length; i++) {
     var t = todos[i];
     var remind = parseInt(t.remind, 10);
     if (isNaN(remind) || remind < 0) continue;
-    var occs = expandRule(t, now, horizon);
+    var occs = expandRule(t, frm, horizon);
     for (var k = 0; k < occs.length; k++) {
       var occ = occs[k].getTime();
       var fireAt = occ - remind * 60000;
