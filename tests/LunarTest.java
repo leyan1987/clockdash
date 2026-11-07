@@ -58,6 +58,19 @@ public class LunarTest {
         passed++;
         System.out.println("  ok - 2026-11-01 农历 = " + ld);
 
+        // 农历日名回归：tens 数组曾错位导致 廿一→十一、十三→初三
+        String[] dayCases = {
+            "初一","初二","初三","初四","初五","初六","初七","初八","初九","初十",
+            "十一","十二","十三","十四","十五","十六","十七","十八","十九","二十",
+            "廿一","廿二","廿三","廿四","廿五","廿六","廿七","廿八","廿九","三十"};
+        for (int d = 1; d <= 30; d++) {
+            String got = Lunar.chinaDay(d);
+            if (!dayCases[d - 1].equals(got))
+                throw new AssertionError("chinaDay(" + d + ") 期望 " + dayCases[d - 1] + " 实际 " + got);
+            passed++;
+        }
+        System.out.println("  ok - 农历日名 1-30 全部正确");
+
         System.out.println("\n全部通过：" + passed + " 项锚点");
     }
 

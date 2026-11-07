@@ -209,7 +209,7 @@ function chinaDay(d) {
   if (d === 10) return "初十";
   if (d === 20) return "二十";
   if (d === 30) return "三十";
-  var tens = ["", "初", "十", "廿", "卅"];
+  var tens = ["初", "十", "廿", "卅"];
   return tens[Math.floor(d / 10)] + DAY_DIGITS[d % 10];
 }
 function solarToLunar(y, m, d) {

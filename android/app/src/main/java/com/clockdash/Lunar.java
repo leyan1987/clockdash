@@ -54,7 +54,7 @@ public final class Lunar {
         if (d == 10) return "初十";
         if (d == 20) return "二十";
         if (d == 30) return "三十";
-        String[] tens = {"", "初", "十", "廿", "卅"};
+        String[] tens = {"初", "十", "廿", "卅"};
         return tens[d / 10] + DAY_DIGITS[d % 10];
     }
 
