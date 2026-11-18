@@ -12,6 +12,9 @@ public final class Prefs {
     public static final String K_CITY = "city";
     public static final String K_LAT = "lat";
     public static final String K_LON = "lon";
+    /** 本机自填的高德 Web 服务 Key 与行政区码（不依赖自建服务器时直连用） */
+    public static final String K_AMAP_KEY = "amap_key_local";
+    public static final String K_AMAP_ADCODE = "amap_adcode_local";
     public static final String K_NIGHT_START = "night_start";
     public static final String K_NIGHT_END = "night_end";
     public static final String K_NIGHT_ONLY = "night_only";

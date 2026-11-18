@@ -26,6 +26,7 @@ public class SettingsActivity extends Activity {
     private static final int REQ_SCAN = 1;
 
     private EditText etUrl, etToken, etCity, etLat, etLon, etNightStart, etNightEnd, etTodoMin, etWxMin;
+    private EditText etAmapKey, etAdcode;
     private CheckBox cbNightOnly, cbSound, cbStayOn, cbAutoBoot;
 
     @Override
@@ -38,6 +39,8 @@ public class SettingsActivity extends Activity {
         etCity = (EditText) findViewById(R.id.etCity);
         etLat = (EditText) findViewById(R.id.etLat);
         etLon = (EditText) findViewById(R.id.etLon);
+        etAmapKey = (EditText) findViewById(R.id.etAmapKey);
+        etAdcode = (EditText) findViewById(R.id.etAdcode);
         etNightStart = (EditText) findViewById(R.id.etNightStart);
         etNightEnd = (EditText) findViewById(R.id.etNightEnd);
         etTodoMin = (EditText) findViewById(R.id.etTodoMin);
@@ -52,6 +55,8 @@ public class SettingsActivity extends Activity {
         etCity.setText(Prefs.get(this, Prefs.K_CITY, ""));
         etLat.setText(Prefs.get(this, Prefs.K_LAT, ""));
         etLon.setText(Prefs.get(this, Prefs.K_LON, ""));
+        etAmapKey.setText(Prefs.get(this, Prefs.K_AMAP_KEY, ""));
+        etAdcode.setText(Prefs.get(this, Prefs.K_AMAP_ADCODE, ""));
         etNightStart.setText(Prefs.get(this, Prefs.K_NIGHT_START, "22:30"));
         etNightEnd.setText(Prefs.get(this, Prefs.K_NIGHT_END, "06:30"));
         etTodoMin.setText(String.valueOf(Prefs.getInt(this, Prefs.K_TODO_MIN, 60)));
@@ -124,6 +129,8 @@ public class SettingsActivity extends Activity {
         etCity.setText(Prefs.get(this, Prefs.K_CITY, ""));
         etLat.setText(Prefs.get(this, Prefs.K_LAT, ""));
         etLon.setText(Prefs.get(this, Prefs.K_LON, ""));
+        etAmapKey.setText(Prefs.get(this, Prefs.K_AMAP_KEY, ""));
+        etAdcode.setText(Prefs.get(this, Prefs.K_AMAP_ADCODE, ""));
     }
 
     private void save() {
@@ -132,6 +139,8 @@ public class SettingsActivity extends Activity {
         Prefs.put(this, Prefs.K_CITY, etCity.getText().toString().trim());
         Prefs.put(this, Prefs.K_LAT, etLat.getText().toString().trim());
         Prefs.put(this, Prefs.K_LON, etLon.getText().toString().trim());
+        Prefs.put(this, Prefs.K_AMAP_KEY, etAmapKey.getText().toString().trim());
+        Prefs.put(this, Prefs.K_AMAP_ADCODE, etAdcode.getText().toString().trim());
         Prefs.put(this, Prefs.K_NIGHT_START, etNightStart.getText().toString().trim());
         Prefs.put(this, Prefs.K_NIGHT_END, etNightEnd.getText().toString().trim());
         Prefs.put(this, Prefs.K_TODO_MIN, etTodoMin.getText().toString().trim());
@@ -162,7 +171,37 @@ public class SettingsActivity extends Activity {
     private void test() {
         final String base = Store.serverBase(this);
         if (base == null) {
-            toast("请先填写服务器地址");
+            // 未购买服务器版：用本机高德 Key 做连通性测试
+            if (Prefs.get(this, Prefs.K_AMAP_KEY, "").trim().length() == 0) {
+                toast("请填服务器地址，或填高德 Key + 行政区码");
+                return;
+            }
+            toast("正在连接高德…");
+            final SettingsActivity activity = this;
+            final Context app = getApplicationContext();
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    WeatherInfo w = null;
+                    try {
+                        w = Store.fetchAmap(app);
+                    } catch (Throwable ignored) {
+                    }
+                    final WeatherInfo result = w;
+                    activity.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (activity.isFinishing()) return;
+                            if (result == null) {
+                                toast("高德连接失败：检查 Key/行政区码/网络");
+                            } else {
+                                toast("高德连接成功：" + result.condText + " "
+                                        + Math.round(result.temp) + "° ✓");
+                            }
+                        }
+                    });
+                }
+            }, "clockdash-test-amap").start();
             return;
         }
         toast("正在连接 " + base + " …");

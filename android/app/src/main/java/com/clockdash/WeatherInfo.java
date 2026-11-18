@@ -28,15 +28,20 @@ public class WeatherInfo {
             WeatherInfo w = new WeatherInfo();
             w.temp = root.optDouble("temp", 0);
             w.condText = root.optString("cond", "");
-            String hum = root.optString("humidity", "");
-            String wind = root.optString("wind", "");
-            StringBuilder ex = new StringBuilder();
-            if (hum.length() > 0) ex.append("湿度 ").append(hum).append("%");
-            if (wind.length() > 0) {
-                if (ex.length() > 0) ex.append(" · ");
-                ex.append(wind);
+            String extra = root.optString("extra", "");
+            if (extra.length() > 0) {
+                w.extra = extra;   // 本机缓存的规范化格式
+            } else {
+                String hum = root.optString("humidity", "");
+                String wind = root.optString("wind", "");
+                StringBuilder ex = new StringBuilder();
+                if (hum.length() > 0) ex.append("湿度 ").append(hum).append("%");
+                if (wind.length() > 0) {
+                    if (ex.length() > 0) ex.append(" · ");
+                    ex.append(wind);
+                }
+                w.extra = ex.toString();
             }
-            w.extra = ex.toString();
             fillCasts(w, root.optJSONArray("casts"), null, null, null);
             return w;
         } catch (Exception e) {
@@ -65,6 +70,79 @@ public class WeatherInfo {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    /**
+     * 解析高德 Web 服务 API 原始响应（平板直连用）。
+     * extensions=base 才返回 lives，extensions=all 才返回 forecasts，
+     * 两者互斥，必须由调用方分别请求后一起传进来。
+     */
+    public static WeatherInfo parseAmap(String liveJson, String castJson) {
+        try {
+            if (liveJson == null) return null;
+            JSONObject lr = new JSONObject(liveJson);
+            if (!"1".equals(lr.optString("status", ""))) return null;
+            JSONArray lives = lr.optJSONArray("lives");
+            if (lives == null || lives.length() == 0) return null;
+            JSONObject live = lives.getJSONObject(0);
+            WeatherInfo w = new WeatherInfo();
+            w.temp = num(live.optString("temperature", "0"));
+            w.condText = live.optString("weather", "");
+            String hum = live.optString("humidity", "");
+            String wind = amapWind(live.optString("winddirection", ""),
+                                   live.optString("windpower", ""));
+            StringBuilder ex = new StringBuilder();
+            if (hum.length() > 0) ex.append("湿度 ").append(hum).append("%");
+            if (wind.length() > 0) {
+                if (ex.length() > 0) ex.append(" · ");
+                ex.append(wind);
+            }
+            w.extra = ex.toString();
+
+            if (castJson != null) {
+                JSONObject cr = new JSONObject(castJson);
+                if ("1".equals(cr.optString("status", ""))) {
+                    JSONArray fcs = cr.optJSONArray("forecasts");
+                    if (fcs != null && fcs.length() > 0) {
+                        JSONArray casts = fcs.getJSONObject(0).optJSONArray("casts");
+                        if (casts != null && casts.length() > 0) {
+                            int n = casts.length();
+                            w.dayDate = new String[n];
+                            w.dayText = new String[n];
+                            w.dayMin = new double[n];
+                            w.dayMax = new double[n];
+                            for (int i = 0; i < n; i++) {
+                                JSONObject o = casts.getJSONObject(i);
+                                w.dayDate[i] = o.optString("date", "");
+                                String day = o.optString("dayweather", "");
+                                String night = o.optString("nightweather", "");
+                                w.dayText[i] = day.length() > 0 ? day : night;
+                                w.dayMin[i] = num(o.optString("nighttemp", "0"));
+                                w.dayMax[i] = num(o.optString("daytemp", "0"));
+                            }
+                        }
+                    }
+                }
+            }
+            return w;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static double num(String s) {
+        try {
+            return Double.parseDouble(s.trim());
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private static String amapWind(String dir, String power) {
+        if (dir.length() == 0 && power.length() == 0) return "";
+        String p = power;
+        if (p.length() > 0 && !p.contains("级")) p = p + "级";
+        return (dir.length() > 0 ? dir : "") + p;
     }
 
     /**

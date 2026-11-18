@@ -12,6 +12,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 
@@ -89,17 +90,24 @@ public final class Store {
     // ---------- 天气 ----------
 
     public static String weatherUrl(Context c) {
+        return weatherUrl(c, 4);
+    }
+
+    public static String weatherUrl(Context c, int days) {
         String lat = Prefs.get(c, Prefs.K_LAT, "");
         String lon = Prefs.get(c, Prefs.K_LON, "");
         if (lat.length() == 0 || lon.length() == 0) return null;
         return "http://api.open-meteo.com/v1/forecast?latitude=" + lat + "&longitude=" + lon
                 + "&current_weather=true&daily=weathercode,temperature_2m_max,temperature_2m_min"
-                + "&timezone=auto&forecast_days=4";
+                + "&timezone=auto&forecast_days=" + days;
     }
 
     /**
-     * 取天气：优先走自己服务器的 /api/weather（高德由服务器代理，Key 不下发平板）；
-     * 服务器没有可用数据时退回平板直连 Open-Meteo（纯 HTTP）。
+     * 取天气，三级来源：
+     *   1) 自建服务器 /api/weather（高德由服务器代理，Key 不下发平板）
+     *   2) 本机自填 Key 直连高德 HTTP（不买服务器版也能用高德）
+     *   3) Open-Meteo 直连（纯 HTTP，最后的兜底）
+     * 三路都失败时保留旧缓存，界面显示「等待天气数据」。
      */
     public static WeatherInfo fetchWeather(Context c) {
         String base = serverBase(c);
@@ -113,7 +121,11 @@ public final class Store {
                 }
             }
         }
-        String url = weatherUrl(c);
+        // 本机高德 Key：服务器不可用或未购买服务器版时使用
+        WeatherInfo local = fetchAmap(c);
+        if (local != null) return local;
+        // Open-Meteo 兜底（默认即 7 天）
+        String url = weatherUrl(c, 7);
         if (url == null) return null;
         String s2 = HttpUtil.get(url, null, 12000);
         if (s2 == null) return null;
@@ -121,6 +133,89 @@ public final class Store {
         if (w2 == null) return null;
         writePrivate(c, WEATHER_CACHE, s2);
         return w2;
+    }
+
+    /**
+     * 用本机填写的高德 Key + 行政区码直连天气 API。
+     * 必须走 http://：Android 4.0.3 (API 15) 只有 TLS 1.0，现代 HTTPS 握手必失败。
+     * 高德的 base/all 两种 extensions 互斥，必须分别请求再合并。
+     */
+    static WeatherInfo fetchAmap(Context c) {
+        String key = Prefs.get(c, Prefs.K_AMAP_KEY, "").trim();
+        String adcode = Prefs.get(c, Prefs.K_AMAP_ADCODE, "").trim();
+        if (key.length() == 0 || !adcode.matches("\\d{6}")) return null;
+        String base = "http://restapi.amap.com/v3/weather/weatherInfo?city=" + adcode
+                + "&key=" + key + "&output=JSON&extensions=";
+        String live = HttpUtil.get(base + "base", null, 12000);
+        String cast = HttpUtil.get(base + "all", null, 12000);
+        WeatherInfo w = WeatherInfo.parseAmap(live, cast);
+        if (w == null) return null;
+        // 高德只有 4 天，用 Open-Meteo 按日期补齐到一周
+        extendWeek(c, w);
+        String json = toServerJson(w);
+        if (json != null) writePrivate(c, WEATHER_CACHE, json);
+        return w;
+    }
+
+    /** 高德 4 天 + Open-Meteo 7 天按日期去重合并，补齐未来 6 天 */
+    private static void extendWeek(Context c, WeatherInfo w) {
+        if (w.dayDate.length >= 7) return;
+        String url = weatherUrl(c, 7);
+        if (url == null) return;
+        String s = HttpUtil.get(url, null, 12000);
+        WeatherInfo om = WeatherInfo.parseOpenMeteo(s);
+        if (om == null || om.dayDate.length == 0) return;
+        HashSet<String> have = new HashSet<String>();
+        ArrayList<String> ds = new ArrayList<String>();
+        ArrayList<String> tx = new ArrayList<String>();
+        ArrayList<Double> mn = new ArrayList<Double>();
+        ArrayList<Double> mx = new ArrayList<Double>();
+        for (int i = 0; i < w.dayDate.length; i++) {
+            if (w.dayDate[i] != null && w.dayDate[i].length() > 0) have.add(w.dayDate[i]);
+            ds.add(w.dayDate[i]); tx.add(w.dayText[i]);
+            mn.add(w.dayMin[i]); mx.add(w.dayMax[i]);
+        }
+        for (int i = 0; i < om.dayDate.length && ds.size() < 7; i++) {
+            String d = om.dayDate[i];
+            if (d == null || d.length() == 0 || have.contains(d)) continue;
+            have.add(d);
+            ds.add(d); tx.add(om.dayText[i]);
+            mn.add(om.dayMin[i]); mx.add(om.dayMax[i]);
+        }
+        w.dayDate = ds.toArray(new String[ds.size()]);
+        w.dayText = tx.toArray(new String[tx.size()]);
+        w.dayMin = new double[mn.size()];
+        w.dayMax = new double[mx.size()];
+        for (int i = 0; i < mn.size(); i++) {
+            w.dayMin[i] = mn.get(i);
+            w.dayMax[i] = mx.get(i);
+        }
+        // 高德 casts 与 Open-Meteo daily 都是日期升序，按序追加后整体仍升序
+    }
+
+    /** 把 WeatherInfo 写成服务器 /api/weather 同款 JSON，供 loadWeatherCache 重载 */
+    private static String toServerJson(WeatherInfo w) {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("ok", true);
+            o.put("source", "amap");
+            o.put("cond", w.condText);
+            o.put("temp", w.temp);
+            o.put("extra", w.extra);
+            JSONArray arr = new JSONArray();
+            for (int i = 0; i < w.dayDate.length; i++) {
+                JSONObject c = new JSONObject();
+                c.put("date", w.dayDate[i]);
+                c.put("cond", w.dayText[i]);
+                c.put("min", w.dayMin[i]);
+                c.put("max", w.dayMax[i]);
+                arr.put(c);
+            }
+            o.put("casts", arr);
+            return o.toString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public static WeatherInfo loadWeatherCache(Context c) {

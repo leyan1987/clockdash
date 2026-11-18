@@ -34,6 +34,16 @@
             <EditText android:id="@+id/etLon" style="@style/Et" android:layout_weight="1" android:hint="经度 如 116.40" android:inputType="numberDecimal|numberSigned" />
         </LinearLayout>
 
+        <TextView style="@style/SecTitle" android:text="高德天气 Key（可选，不买服务器时填）" />
+        <EditText android:id="@+id/etAmapKey" style="@style/Et"
+            android:hint="高德开放平台 Web服务 类型 Key" android:inputType="textVisiblePassword" />
+        <EditText android:id="@+id/etAdcode" style="@style/Et"
+            android:hint="行政区码 6 位，如 371302" android:inputType="number" />
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
+            android:text="填了就由平板直连高德取天气（明文 HTTP，Key 只存在本机）。服务器地址留空也能用；一周预报会自动用 Open-Meteo 补齐。Key 请自己注册，不要共享。" />
+
         <TextView style="@style/SecTitle" android:text="夜间模式" />
         <LinearLayout style="@style/BtnRow">
             <EditText android:id="@+id/etNightStart" style="@style/Et" android:layout_weight="1" android:hint="开始 22:30" />
