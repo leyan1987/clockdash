@@ -84,37 +84,79 @@
             android:textSize="15sp"
             android:textColor="@color/muted" />
 
-        <!-- 未来三天预报：紧跟在今天天气下方 -->
+        <!-- 未来六天预报：两行三列，每格宽度与原来一致；加上今天实况即一周。
+             第二行默认隐藏，只在服务端真的补齐了一周数据时才显示，
+             小屏/数据源只有 4 天时布局与旧版完全相同，不会挤爆左栏。 -->
         <LinearLayout
             android:id="@+id/rowFc"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:orientation="horizontal">
+            android:layout_marginTop="12dp"
+            android:orientation="vertical">
 
-            <LinearLayout style="@style/FcCell">
-                <TextView android:id="@+id/tvFcDay0" style="@style/FcDay" />
-                <com.clockdash.WeatherIconView
-                    android:id="@+id/icFc0"
-                    android:layout_width="26dp"
-                    android:layout_height="26dp" />
-                <TextView android:id="@+id/tvFcTxt0" style="@style/FcTxt" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <LinearLayout style="@style/FcCell">
+                    <TextView android:id="@+id/tvFcDay0" style="@style/FcDay" />
+                    <com.clockdash.WeatherIconView
+                        android:id="@+id/icFc0"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp" />
+                    <TextView android:id="@+id/tvFcTxt0" style="@style/FcTxt" />
+                </LinearLayout>
+                <LinearLayout style="@style/FcCell">
+                    <TextView android:id="@+id/tvFcDay1" style="@style/FcDay" />
+                    <com.clockdash.WeatherIconView
+                        android:id="@+id/icFc1"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp" />
+                    <TextView android:id="@+id/tvFcTxt1" style="@style/FcTxt" />
+                </LinearLayout>
+                <LinearLayout style="@style/FcCell">
+                    <TextView android:id="@+id/tvFcDay2" style="@style/FcDay" />
+                    <com.clockdash.WeatherIconView
+                        android:id="@+id/icFc2"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp" />
+                    <TextView android:id="@+id/tvFcTxt2" style="@style/FcTxt" />
+                </LinearLayout>
             </LinearLayout>
-            <LinearLayout style="@style/FcCell">
-                <TextView android:id="@+id/tvFcDay1" style="@style/FcDay" />
-                <com.clockdash.WeatherIconView
-                    android:id="@+id/icFc1"
-                    android:layout_width="26dp"
-                    android:layout_height="26dp" />
-                <TextView android:id="@+id/tvFcTxt1" style="@style/FcTxt" />
-            </LinearLayout>
-            <LinearLayout style="@style/FcCell">
-                <TextView android:id="@+id/tvFcDay2" style="@style/FcDay" />
-                <com.clockdash.WeatherIconView
-                    android:id="@+id/icFc2"
-                    android:layout_width="26dp"
-                    android:layout_height="26dp" />
-                <TextView android:id="@+id/tvFcTxt2" style="@style/FcTxt" />
+
+            <LinearLayout
+                android:id="@+id/rowFc2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <LinearLayout style="@style/FcCell">
+                    <TextView android:id="@+id/tvFcDay3" style="@style/FcDay" />
+                    <com.clockdash.WeatherIconView
+                        android:id="@+id/icFc3"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp" />
+                    <TextView android:id="@+id/tvFcTxt3" style="@style/FcTxt" />
+                </LinearLayout>
+                <LinearLayout style="@style/FcCell">
+                    <TextView android:id="@+id/tvFcDay4" style="@style/FcDay" />
+                    <com.clockdash.WeatherIconView
+                        android:id="@+id/icFc4"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp" />
+                    <TextView android:id="@+id/tvFcTxt4" style="@style/FcTxt" />
+                </LinearLayout>
+                <LinearLayout style="@style/FcCell">
+                    <TextView android:id="@+id/tvFcDay5" style="@style/FcDay" />
+                    <com.clockdash.WeatherIconView
+                        android:id="@+id/icFc5"
+                        android:layout_width="22dp"
+                        android:layout_height="22dp" />
+                    <TextView android:id="@+id/tvFcTxt5" style="@style/FcTxt" />
+                </LinearLayout>
             </LinearLayout>
         </LinearLayout>
 

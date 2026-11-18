@@ -21,9 +21,10 @@
   #wxTemp { font-size: clamp(30px, 6.5vh, 76px); font-weight: 500; }
   #wxCond { font-size: clamp(13px, 2vh, 20px); color: #8fa0af; }
   #wxMeta { margin-top: 1vh; font-size: clamp(12px, 1.8vh, 17px); color: #8fa0af; }
-  #forecast { margin-top: 2.5vh; display: flex; gap: 1.5vw; }
-  .fc { flex: 1; text-align: center; display: flex; flex-direction: column; gap: .5vh;
-        padding: 1vh 0; background: #141a21; border-radius: 8px; }
+  #forecast { margin-top: 2.5vh; display: flex; flex-wrap: wrap; gap: 1vh 1.5vw; }
+  .fc { flex: 0 0 calc(33.333% - 1vw); text-align: center; display: flex;
+        flex-direction: column; gap: .5vh; padding: 1vh 0;
+        background: #141a21; border-radius: 8px; }
   .fc-day { font-size: clamp(11px, 1.6vh, 15px); color: #8fa0af; }
   .fc-main { font-size: clamp(12px, 1.8vh, 17px); }
   .ficon { font-style: normal; font-size: clamp(16px, 2.6vh, 28px); }
@@ -138,6 +139,9 @@
       <div class="fc"><span class="fc-day" id="fcD0">--</span><span class="ficon" id="fcI0">--</span><span class="fc-main" id="fcT0">--</span></div>
       <div class="fc"><span class="fc-day" id="fcD1">--</span><span class="ficon" id="fcI1">--</span><span class="fc-main" id="fcT1">--</span></div>
       <div class="fc"><span class="fc-day" id="fcD2">--</span><span class="ficon" id="fcI2">--</span><span class="fc-main" id="fcT2">--</span></div>
+      <div class="fc"><span class="fc-day" id="fcD3">--</span><span class="ficon" id="fcI3">--</span><span class="fc-main" id="fcT3">--</span></div>
+      <div class="fc"><span class="fc-day" id="fcD4">--</span><span class="ficon" id="fcI4">--</span><span class="fc-main" id="fcT4">--</span></div>
+      <div class="fc"><span class="fc-day" id="fcD5">--</span><span class="ficon" id="fcI5">--</span><span class="fc-main" id="fcT5">--</span></div>
     </div>
   </div>
   <div class="col col-mid">
@@ -444,7 +448,11 @@ function condIcon(text) {
 }
 var WD = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 function renderWeather() {
-  if (!wxData) { $("wxTemp").textContent = "--°"; $("wxCond").textContent = "等待天气数据"; return; }
+  if (!wxData) {
+    $("wxTemp").textContent = "--°"; $("wxCond").textContent = "等待天气数据";
+    for (var k = 0; k < 6; k++) $("fcD" + k).parentElement.style.display = k < 3 ? "" : "none";
+    return;
+  }
   $("wxTemp").textContent = Math.round(wxData.temp) + "°";
   $("wxCond").textContent = condIcon(wxData.cond) + " " + (wxData.cond || "--");
   var meta = [];
@@ -455,17 +463,28 @@ function renderWeather() {
   if (wxData.wind) meta.push(wxData.wind);
   $("wxMeta").textContent = meta.join(" · ");
   $("icNow").textContent = condIcon(wxData.cond);
-  for (var i = 0; i < 3; i++) {
+  var casts = wxData.casts || [];
+  // 服务端补齐一周时 casts 有 7 天（今天 + 未来 6 天）；只有高德 4 天时
+  // 第二行三个格子隐藏，布局退回旧版的一行三格
+  var week = casts.length >= 5;
+  var slots = week ? 6 : 3;
+  for (var i = 0; i < 6; i++) {
     var idx = i + 1, cd = $("fcD" + i), ct = $("fcT" + i), ci = $("fcI" + i);
-    if (wxData.casts && idx < wxData.casts.length) {
-      var cast = wxData.casts[idx];
+    var box = cd.parentElement, cast = casts[idx];
+    if (i < slots && cast && cast.date) {
       var pd = cast.date.split("-");
       var dt = new Date(+pd[0], +pd[1] - 1, +pd[2]);
+      box.style.display = "";
       cd.textContent = i === 0 ? "明天" : i === 1 ? "后天" : WD[dt.getDay()];
       ct.textContent = Math.round(cast.min) + "°/" + Math.round(cast.max) + "°";
       ci.textContent = condIcon(cast.cond);
       ci.title = cast.cond;
-    } else { cd.textContent = "--"; ct.textContent = "--"; ci.textContent = ""; }
+    } else if (i < slots) {
+      box.style.display = "";
+      cd.textContent = "--"; ct.textContent = "--"; ci.textContent = "";
+    } else {
+      box.style.display = "none";   // 数据不足直接隐藏，不留一排 "--"
+    }
   }
 }
 function fetchWeather() {

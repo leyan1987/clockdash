@@ -71,13 +71,15 @@ public class DashboardActivity extends Activity {
 
     private TextView tvClock, tvDate, tvTemp, tvCond, tvCity, tvMeta, tvStatus, tvSyncNote;
     private TextView tvCalTitle, tvCalYear;
-    private TextView[] tvFcDay = new TextView[3];
-    private TextView[] tvFcTxt = new TextView[3];
+    /** 未来 6 天预报（2 行 × 3 列），加上今天的实况即完整一周 */
+    private static final int FC_SLOTS = 6;
+    private TextView[] tvFcDay = new TextView[FC_SLOTS];
+    private TextView[] tvFcTxt = new TextView[FC_SLOTS];
     private WeatherIconView icNow;
-    private WeatherIconView[] icFc = new WeatherIconView[3];
+    private WeatherIconView[] icFc = new WeatherIconView[FC_SLOTS];
     private TextView[] wdViews = new TextView[7];
     private LinearLayout colMid, colRight, boxWx, calGrid;
-    private View rowFc;
+    private View rowFc, rowFc2;
     private ListView listTodos;
 
     private final TextView[] cellText = new TextView[42];
@@ -206,19 +208,22 @@ public class DashboardActivity extends Activity {
         colRight = (LinearLayout) findViewById(R.id.colRight);
         boxWx = (LinearLayout) findViewById(R.id.boxWx);
         rowFc = findViewById(R.id.rowFc);
+        rowFc2 = findViewById(R.id.rowFc2);
         calGrid = (LinearLayout) findViewById(R.id.calGrid);
         listTodos = (ListView) findViewById(R.id.listTodos);
 
-        tvFcDay[0] = (TextView) findViewById(R.id.tvFcDay0);
-        tvFcDay[1] = (TextView) findViewById(R.id.tvFcDay1);
-        tvFcDay[2] = (TextView) findViewById(R.id.tvFcDay2);
-        tvFcTxt[0] = (TextView) findViewById(R.id.tvFcTxt0);
-        tvFcTxt[1] = (TextView) findViewById(R.id.tvFcTxt1);
-        tvFcTxt[2] = (TextView) findViewById(R.id.tvFcTxt2);
+        int[] fcDayIds = {R.id.tvFcDay0, R.id.tvFcDay1, R.id.tvFcDay2,
+                          R.id.tvFcDay3, R.id.tvFcDay4, R.id.tvFcDay5};
+        int[] fcTxtIds = {R.id.tvFcTxt0, R.id.tvFcTxt1, R.id.tvFcTxt2,
+                          R.id.tvFcTxt3, R.id.tvFcTxt4, R.id.tvFcTxt5};
+        int[] fcIconIds = {R.id.icFc0, R.id.icFc1, R.id.icFc2,
+                           R.id.icFc3, R.id.icFc4, R.id.icFc5};
+        for (int i = 0; i < FC_SLOTS; i++) {
+            tvFcDay[i] = (TextView) findViewById(fcDayIds[i]);
+            tvFcTxt[i] = (TextView) findViewById(fcTxtIds[i]);
+            icFc[i] = (WeatherIconView) findViewById(fcIconIds[i]);
+        }
         icNow = (WeatherIconView) findViewById(R.id.icNow);
-        icFc[0] = (WeatherIconView) findViewById(R.id.icFc0);
-        icFc[1] = (WeatherIconView) findViewById(R.id.icFc1);
-        icFc[2] = (WeatherIconView) findViewById(R.id.icFc2);
 
         int[] wdIds = {R.id.wd0, R.id.wd1, R.id.wd2, R.id.wd3, R.id.wd4, R.id.wd5, R.id.wd6};
         for (int i = 0; i < 7; i++) {
@@ -790,7 +795,10 @@ public class DashboardActivity extends Activity {
             tvCity.setText("");
             tvMeta.setText("");
             icNow.setType(WeatherIconView.T_NONE);
-            for (int i = 0; i < 3; i++) {
+            if (rowFc2 != null) rowFc2.setVisibility(View.GONE);
+            for (int i = 0; i < FC_SLOTS; i++) {
+                View cell = (View) tvFcDay[i].getParent();
+                cell.setVisibility(i < 3 ? View.VISIBLE : View.GONE);
                 tvFcDay[i].setText("--");
                 tvFcTxt[i].setText("--");
                 icFc[i].setType(WeatherIconView.T_NONE);
@@ -812,25 +820,42 @@ public class DashboardActivity extends Activity {
             tvMeta.setText("");
         }
         Calendar cal = Calendar.getInstance();
-        for (int i = 0; i < 3; i++) {
-            int idx = i + 1; // 明天起的三天
-            if (idx < mWx.dayDate.length && mWx.dayDate[idx].length() == 10) {
+        // 服务端补齐一周时 dayDate 有 7 天（今天 + 未来 6 天）；只有高德的 4 天时
+        // 第二行保持隐藏，布局退回旧版的一行三格，小屏不会被撑爆。
+        boolean week = mWx.dayDate.length >= 5;
+        if (rowFc2 != null) rowFc2.setVisibility(week ? View.VISIBLE : View.GONE);
+        int slots = week ? FC_SLOTS : 3;
+        for (int i = 0; i < FC_SLOTS; i++) {
+            View cell = (View) tvFcDay[i].getParent();
+            int idx = i + 1; // 跳过今天：实况已在上方单独显示
+            boolean filled = false;
+            if (i < slots && idx < mWx.dayDate.length
+                    && mWx.dayDate[idx].length() == 10) {
                 try {
                     SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
                     cal.setTime(df.parse(mWx.dayDate[idx]));
-                    String label = i == 0 ? "明天" : "周" + "日一二三四五六".charAt(dowSun1(cal));
+                    String label = i == 0 ? "明天" : i == 1 ? "后天"
+                            : "周" + "日一二三四五六".charAt(dowSun1(cal));
                     tvFcDay[i].setText(label);
                     // 统一两行显示：第一行天气文字、第二行温度，各格高度一致
                     tvFcTxt[i].setText(mWx.dayText[idx] + "\n"
                             + Math.round(mWx.dayMin[idx]) + "°/" + Math.round(mWx.dayMax[idx]) + "°");
                     icFc[i].setType(WeatherIconView.typeFor(mWx.dayText[idx]));
-                    continue;
+                    filled = true;
                 } catch (Exception ignored) {
                 }
             }
-            tvFcDay[i].setText("--");
-            tvFcTxt[i].setText("--");
-            icFc[i].setType(WeatherIconView.T_NONE);
+            if (filled) {
+                cell.setVisibility(View.VISIBLE);
+            } else if (i < slots) {
+                cell.setVisibility(View.VISIBLE);
+                tvFcDay[i].setText("--");
+                tvFcTxt[i].setText("--");
+                icFc[i].setType(WeatherIconView.T_NONE);
+            } else {
+                // 数据不足时直接隐藏格子，不留一排难看的 "--"
+                cell.setVisibility(View.GONE);
+            }
         }
     }
 

@@ -957,10 +957,10 @@ def _fetch_amap(key, adcode):
             "casts": casts}
 
 
-def _fetch_openmeteo(lat, lon):
+def _fetch_openmeteo(lat, lon, days=4):
     url = ("https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
            "&current_weather=true&daily=weathercode,temperature_2m_max,temperature_2m_min"
-           "&timezone=auto&forecast_days=4" % (lat, lon))
+           "&timezone=auto&forecast_days=%d" % (lat, lon, days))
     doc = _http_json(url)
     cur = doc.get("current_weather") or {}
     daily = doc.get("daily") or {}
@@ -978,6 +978,44 @@ def _fetch_openmeteo(lat, lon):
             "cond": _wmo_text(cur.get("weathercode")),
             "temp": _num(cur.get("temperature")),
             "humidity": "", "wind": "", "casts": casts}
+
+
+def _extend_week(result, lat, lon, days=7):
+    """把高德的 4 天预报补齐到一周。
+
+    高德 /v3/weather/weatherInfo 的 casts 固定只有「当天 + 未来 3 天」（官方文档），
+    没有 7 天接口；Open-Meteo 默认 7 天、最多 16 天且免费无 Key，项目里本来就有
+    这个兜底源和 WMO 天气码 -> 中文的映射表。这里按日期去重后仅补高德缺的
+    后续日期，不覆盖高德已有的中文天气描述（本地化更准）。
+    Open-Meteo 失败/超时一律原样返回，绝不让主天气源被拖挂。
+    """
+    try:
+        casts = list(result.get("casts") or [])
+        have = set(c.get("date", "") for c in casts)
+        doc = _http_json(
+            "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s"
+            "&daily=weathercode,temperature_2m_max,temperature_2m_min"
+            "&timezone=auto&forecast_days=%d" % (lat, lon, days), timeout=5)
+        daily = doc.get("daily") or {}
+        dates = daily.get("time") or []
+        codes = daily.get("weathercode") or []
+        mins = daily.get("temperature_2m_min") or []
+        maxs = daily.get("temperature_2m_max") or []
+        for i, d in enumerate(dates):
+            if d in have or len(casts) >= days:
+                continue
+            casts.append({"date": d,
+                          "cond": _wmo_text(codes[i] if i < len(codes) else None),
+                          "min": mins[i] if i < len(mins) else 0,
+                          "max": maxs[i] if i < len(maxs) else 0})
+            have.add(d)
+        casts.sort(key=lambda c: c.get("date", ""))
+        merged = dict(result)
+        merged["casts"] = casts[:days]
+        merged["week_extended"] = len(merged["casts"]) > len(result.get("casts") or [])
+        return merged
+    except Exception:
+        return result
 
 
 def get_weather(dev_id):
@@ -1000,6 +1038,10 @@ def get_weather(dev_id):
         else:
             try:
                 result = _fetch_amap(key, adcode)
+                # 高德只有 4 天，有经纬度时把后面几天补齐成一周
+                lat, lon = cfg.get("lat"), cfg.get("lon")
+                if lat and lon:
+                    result = _extend_week(result, lat, lon)
             except Exception as e:
                 result = {"ok": False, "error": "高德: %s" % e}
 
@@ -1007,7 +1049,8 @@ def get_weather(dev_id):
         lat, lon = cfg.get("lat"), cfg.get("lon")
         if lat and lon:
             try:
-                result = _fetch_openmeteo(lat, lon)
+                # 兜底源本身就能给 7 天，不必再合并
+                result = _fetch_openmeteo(lat, lon, days=7)
             except Exception as e:
                 if result is None:
                     result = {"ok": False, "error": "Open-Meteo: %s" % e}
