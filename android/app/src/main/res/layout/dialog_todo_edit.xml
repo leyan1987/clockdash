@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="标题"
+            android:textSize="13sp"
+            android:textColor="@color/dim" />
+        <EditText android:id="@+id/etTitle" style="@style/Et" android:hint="例如 英语线下" />
+
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="日期与时间" android:textSize="13sp" android:textColor="@color/dim" />
+        <LinearLayout
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <EditText android:id="@+id/etDate" style="@style/Et"
+                android:layout_width="0dp" android:layout_weight="1"
+                android:hint="yyyy-MM-dd" android:inputType="date" />
+            <EditText android:id="@+id/etTime" style="@style/Et"
+                android:layout_width="0dp" android:layout_weight="1"
+                android:hint="HH:mm" android:inputType="time" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="重复规则" android:textSize="13sp" android:textColor="@color/dim" />
+        <Spinner
+            android:id="@+id/spRepeat"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:background="@drawable/et_bg" />
+
+        <LinearLayout
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+            <EditText android:id="@+id/etInterval" style="@style/Et"
+                android:layout_width="0dp" android:layout_weight="1"
+                android:hint="间隔 N" android:inputType="number" />
+            <EditText android:id="@+id/etRemind" style="@style/Et"
+                android:layout_width="0dp" android:layout_weight="1"
+                android:hint="提前提醒(分钟)" android:inputType="number" />
+        </LinearLayout>
+
+        <EditText android:id="@+id/etWeekdays" style="@style/Et"
+            android:layout_marginTop="6dp"
+            android:hint="星期 1=周一…7=周日，逗号分隔；留空跟随开始日期" />
+
+        <LinearLayout
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+            <EditText android:id="@+id/etWindowFrom" style="@style/Et"
+                android:layout_width="0dp" android:layout_weight="1"
+                android:hint="时段起 08:00" android:inputType="time" />
+            <EditText android:id="@+id/etWindowTo" style="@style/Et"
+                android:layout_width="0dp" android:layout_weight="1"
+                android:hint="时段止 22:00" android:inputType="time" />
+        </LinearLayout>
+
+        <EditText android:id="@+id/etEnd" style="@style/Et"
+            android:layout_marginTop="6dp"
+            android:hint="结束日期 yyyy-MM-dd（选填）" android:inputType="date" />
+    </LinearLayout>
+</ScrollView>

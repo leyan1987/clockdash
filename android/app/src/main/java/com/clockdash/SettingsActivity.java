@@ -102,6 +102,13 @@ public class SettingsActivity extends Activity {
                 }
             }
         });
+        findViewById(R.id.btnEditTodos).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                save();  // 先把设置页已改的字段落盘，避免返回后丢失
+                startActivity(new Intent(SettingsActivity.this, TodoEditActivity.class));
+            }
+        });
         findViewById(R.id.btnBack).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {

@@ -30,8 +30,8 @@
         <TextView style="@style/SecTitle" android:text="天气位置（也可由手机后台推送）" />
         <EditText android:id="@+id/etCity" style="@style/Et" android:hint="城市名，仅用于显示" />
         <LinearLayout style="@style/BtnRow">
-            <EditText android:id="@+id/etLat" style="@style/Et" android:layout_weight="1" android:hint="纬度 如 39.90" android:inputType="numberDecimal|numberSigned" />
-            <EditText android:id="@+id/etLon" style="@style/Et" android:layout_weight="1" android:hint="经度 如 116.40" android:inputType="numberDecimal|numberSigned" />
+            <EditText android:id="@+id/etLat" style="@style/Et" android:layout_width="0dp" android:layout_weight="1" android:hint="纬度 如 39.90" android:inputType="numberDecimal|numberSigned" />
+            <EditText android:id="@+id/etLon" style="@style/Et" android:layout_width="0dp" android:layout_weight="1" android:hint="经度 如 116.40" android:inputType="numberDecimal|numberSigned" />
         </LinearLayout>
 
         <TextView style="@style/SecTitle" android:text="高德天气 Key（可选，不买服务器时填）" />
@@ -46,17 +46,27 @@
 
         <TextView style="@style/SecTitle" android:text="夜间模式" />
         <LinearLayout style="@style/BtnRow">
-            <EditText android:id="@+id/etNightStart" style="@style/Et" android:layout_weight="1" android:hint="开始 22:30" />
-            <EditText android:id="@+id/etNightEnd" style="@style/Et" android:layout_weight="1" android:hint="结束 06:30" />
+            <EditText android:id="@+id/etNightStart" style="@style/Et" android:layout_width="0dp" android:layout_weight="1" android:hint="开始 22:30" />
+            <EditText android:id="@+id/etNightEnd" style="@style/Et" android:layout_width="0dp" android:layout_weight="1" android:hint="结束 06:30" />
         </LinearLayout>
         <CheckBox android:id="@+id/cbNightOnly" style="@style/Cb" android:text="夜间只显示时钟（自动调暗屏幕）" />
         <CheckBox android:id="@+id/cbSound" style="@style/Cb" android:text="提醒时播放铃声并震动" />
 
         <TextView style="@style/SecTitle" android:text="刷新间隔（分钟）" />
         <LinearLayout style="@style/BtnRow">
-            <EditText android:id="@+id/etTodoMin" style="@style/Et" android:layout_weight="1" android:hint="待办 60" android:inputType="number" />
-            <EditText android:id="@+id/etWxMin" style="@style/Et" android:layout_weight="1" android:hint="天气 60" android:inputType="number" />
+            <EditText android:id="@+id/etTodoMin" style="@style/Et" android:layout_width="0dp" android:layout_weight="1" android:hint="待办 60" android:inputType="number" />
+            <EditText android:id="@+id/etWxMin" style="@style/Et" android:layout_width="0dp" android:layout_weight="1" android:hint="天气 60" android:inputType="number" />
         </LinearLayout>
+
+        <TextView style="@style/SecTitle" android:text="待办管理" />
+        <Button
+            android:id="@+id/btnEditTodos"
+            android:layout_width="match_parent" android:layout_height="46dp"
+            android:textSize="15sp" android:text="管理本机待办（新增 / 修改 / 删除）" />
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
+            android:text="直接在平板上编辑待办，改完点「保存并返回」即写入本机并重排提醒。连着服务器时，服务器推送的待办会覆盖本机编辑。" />
 
         <TextView style="@style/SecTitle" android:text="屏幕常亮" />
         <CheckBox

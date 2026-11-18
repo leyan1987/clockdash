@@ -40,6 +40,9 @@
 
         <activity android:name=".SettingsActivity" />
         <activity
+            android:name=".TodoEditActivity"
+            android:screenOrientation="landscape" />
+        <activity
             android:name=".PairActivity"
             android:screenOrientation="landscape" />
         <activity
