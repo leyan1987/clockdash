@@ -523,11 +523,10 @@
       todos_min: Math.max(1, parseInt($("pTodosMin").value, 10) || 10),
       weather_min: Math.max(5, parseInt($("pWxMin").value, 10) || 30)
     };
-    // 高德 Key 仅管理员可推送（普通用户推送不会清掉管理员设置的 Key）
-    if (auth.role === "admin") {
-      cfg.amap_key = $("pAmapKey").value.trim();
-      cfg.adcode = adcode;
-    }
+    // 每个用户填自己的高德 Key；服务端 _resolve_dev 强制普通用户只能写自己
+    // 绑定的设备，不会清掉别人的 Key
+    cfg.amap_key = $("pAmapKey").value.trim();
+    cfg.adcode = adcode;
     api(dp("/api/config"), "POST", cfg)
       .then(function () { toast("已推送 ✓ 该设备约 5 分钟内生效"); })
       .catch(function (e) { toast("推送失败：" + e.message, 3500); });
@@ -615,7 +614,7 @@
     api(dp("/api/todos")).then(function (j) { todos = j.todos || []; renderTodos(); })
       .catch(function (e) { toast("读取待办失败：" + e.message, 3500); });
     loadHistory();
-    api(dp("/api/config" + (auth.role === "admin" ? "?full=1" : ""))).then(function (c) {
+    api(dp("/api/config?full=1")).then(function (c) {
       if (!c) return;
       $("pCity").value = c.city || ""; $("pNightStart").value = c.night_start || "22:30";
       $("pNightEnd").value = c.night_end || "06:30"; $("pNightOnly").checked = !!c.night_clock_only;

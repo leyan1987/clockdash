@@ -1329,10 +1329,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json(load_json(todos_path(dev), {"version": 1, "todos": []}))
             if p == "/api/config":
                 cfg = load_json(config_path(dev), {})
-                # 平板不需要高德 Key，默认剥离；管理员带 full=1 才返回
+                # 平板拉配置时不需要高德 Key，默认剥离；网页后台带 full=1 才返回。
+                # full=1 对所有已登录用户开放：_resolve_dev 已强制普通用户只能
+                # 访问自己绑定的设备，不会因此读到别人的 Key。
+                # 多租户场景下，每个用户需要能查看/修改自己的 Key。
                 qs = parse_qs(urlparse(self.path).query)
-                if (qs.get("full") or [""])[0] == "1" and a.get("role") != "admin":
-                    return self._send_json({"error": "需要管理员权限"}, 403)
                 if (qs.get("full") or [""])[0] != "1":
                     cfg = dict(cfg)
                     cfg.pop("amap_key", None)
@@ -1454,13 +1455,13 @@ class Handler(SimpleHTTPRequestHandler):
             dev = self._resolve_dev(a)
             if dev is None:
                 return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
-            # 高德 Key/行政区划仅管理员可设置，普通用户推送时忽略这两项，
-            # 防止网页端空白字段把管理员配置的 Key 冲掉
+            # 高德 Key/行政区划允许每个用户自己填写：商业化多租户时各人用各人的
+            # Key，配额与费用互不牵连。安全性由 _resolve_dev 保证——普通用户
+            # 只能写自己绑定的设备，传别人的 devid 会被服务端忽略。
+            # 只写 doc 里出现的字段，所以用户推送其它设置时不会误清已有 Key。
             keys = ("city", "lat", "lon", "night_start", "night_end",
                     "night_clock_only", "remind_sound", "todos_min", "weather_min",
                     "amap_key", "adcode")
-            if a.get("role") != "admin":
-                keys = tuple(k for k in keys if k not in ("amap_key", "adcode"))
             # 整段读-改-写必须在锁内：否则两个管理员同时推送配置会互相覆盖，
             # rev 也会丢失递增（压测 20 并发只得到 3 个有效 rev + 10 个 500）。
             with _SAVE_LOCK:
