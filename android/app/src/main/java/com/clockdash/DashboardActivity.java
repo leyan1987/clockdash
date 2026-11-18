@@ -129,6 +129,8 @@ public class DashboardActivity extends Activity {
     private final boolean[] mRowMeasured = new boolean[3];
     private int mMeasuredWidth = -1;
     private int mFallbackRowH = 60;
+    /** 天气缓存不足 5 天时的自愈重拉时间戳（5 分钟防抖） */
+    private long mWxRetryAt = 0;
 
     private final Handler mHandler = new Handler();
 
@@ -542,8 +544,11 @@ public class DashboardActivity extends Activity {
     private void updateStatus() {
         long t = Store.todosCacheTime(this);
         long wt = Store.weatherCacheTime(this);
+        // 带上天数字数：缓存停留在 4 天时状态栏会显示「天气 HH:mm(4天)」，
+        // 一眼就能看出界面在吃旧缓存，而不是拉取成功
         String wx = wt == 0 ? "" : " · 天气 "
-                + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(wt));
+                + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(wt))
+                + (mWx == null ? "(无)" : "(" + mWx.dayDate.length + "天)");
         String extra = " · 列于 " + (mListBuiltAt.length() == 0 ? "--:--" : mListBuiltAt)
                 + wx + (mHeartbeatActive ? " · 闹钟停于 " + mLastAlarmText + " · 心跳接管" : "")
                 + " · v" + mVersion;
@@ -857,6 +862,37 @@ public class DashboardActivity extends Activity {
                 cell.setVisibility(View.GONE);
             }
         }
+        // 缓存若停留在 4 天，立即后台重拉一次，避免老平板亮屏时一直显示 3 格
+        retryShortWeather();
+    }
+
+    /**
+     * 天气自愈：缓存只有高德的 4 天（预报不足 5 天）时，后台强制重拉。
+     * 天气默认 60 分钟才同步一次，老平板长时间亮屏会一直读旧缓存；
+     * 这里发现不足就重拉，5 分钟防抖，网络不通时不会反复重连。
+     */
+    private void retryShortWeather() {
+        if (mWx == null || mWx.dayDate.length >= 5) return;
+        long now = System.currentTimeMillis();
+        if (now - mWxRetryAt < 5L * 60000L) return;
+        mWxRetryAt = now;
+        final android.content.Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                WeatherInfo w = Store.fetchWeather(app);
+                if (w == null || w.dayDate.length < 5) return;
+                mHandler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (isFinishing()) return;
+                        mWx = Store.loadWeatherCache(DashboardActivity.this);
+                        renderWeather();
+                        updateStatus();
+                    }
+                });
+            }
+        }, "clockdash-wx-retry").start();
     }
 
     private static int dowSun1(Calendar c) {
