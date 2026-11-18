@@ -1068,6 +1068,10 @@ public class DashboardActivity extends Activity {
             when.setTextSize(13);
             title.setTextSize(big ? 20 : 16);
             when.setTextColor(today ? getResources().getColor(R.color.accent) : getResources().getColor(R.color.muted));
+            // 必须显式重置标题颜色：convertView 可能复用了「上一个待办」那一行的 View，
+            // 那里的标题被设成 muted 暗色；不重置的话后面几行会随机残留暗字，
+            // 表现为「某一条待办颜色跟前面不一样」。
+            title.setTextColor(getResources().getColor(R.color.fg));
             title.setTypeface(today ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
             return v;
         }
