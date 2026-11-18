@@ -157,7 +157,15 @@ public final class Store {
             if (s != null) {
                 WeatherInfo w = WeatherInfo.parseServer(s);
                 if (w != null) {
-                    writePrivate(c, WEATHER_CACHE, s);
+                    if (w.dayDate.length < 7) {
+                        // 服务器可能是旧版（只给高德 4 天）或它那边 Open-Meteo 不通：
+                        // 用平板侧直连 Open-Meteo 按日期补齐，避免一周预报退回三天
+                        extendWeek(c, w);
+                        String full = toServerJson(w);
+                        writePrivate(c, WEATHER_CACHE, full == null ? s : full);
+                    } else {
+                        writePrivate(c, WEATHER_CACHE, s);
+                    }
                     return w;
                 }
             }

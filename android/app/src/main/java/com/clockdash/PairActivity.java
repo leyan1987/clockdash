@@ -289,7 +289,7 @@ public class PairActivity extends Activity {
                 } else if ("GET".equals(method) && path.startsWith("/todos")) {
                     doTodosGet(s, qpin);
                 } else {
-                    respond(s, pageHtml(qpin));
+                    respond(s, pageHtml(mContext, qpin));
                 }
                 try {
                     s.close();
@@ -468,7 +468,25 @@ public class PairActivity extends Activity {
                     + "load();";
         }
 
-        private static String pageHtml(String pin) {
+        /** HTML 属性值转义，避免已存配置里的特殊字符破坏表单 */
+        private static String attr(String v) {
+            if (v == null) return "";
+            return v.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;");
+        }
+
+        /**
+         * 配置页必须把已保存的配置全部预填回去：否则用户打开页面点一次
+         * 「保存基本设置」，空输入框会把本机已有的高德 Key/adcode 清空，
+         * 天气随即从一周退回三天（实测踩到）。
+         */
+        private static String pageHtml(Context c, String pin) {
+            String url = Prefs.get(c, Prefs.K_URL, "");
+            String token = Prefs.get(c, Prefs.K_TOKEN, "");
+            String city = Prefs.get(c, Prefs.K_CITY, "");
+            String lat = Prefs.get(c, Prefs.K_LAT, "");
+            String lon = Prefs.get(c, Prefs.K_LON, "");
+            String key = Prefs.get(c, Prefs.K_AMAP_KEY, "");
+            String adcode = Prefs.get(c, Prefs.K_AMAP_ADCODE, "");
             return "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
                     + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
                     + "<title>配置时钟看板平板</title><style>"
@@ -492,14 +510,18 @@ public class PairActivity extends Activity {
                     + "<label>配对码（平板屏幕上的 4 位数字）</label>"
                     + "<input name=\"pin\" required maxlength=\"4\" inputmode=\"numeric\" value=\"" + pin + "\">"
                     + "<label>服务器地址（单机版留空）</label>"
-                    + "<input name=\"url\" placeholder=\"http://123.45.67.89:8765\">"
+                    + "<input name=\"url\" placeholder=\"http://123.45.67.89:8765\" value=\"" + attr(url) + "\">"
                     + "<label>口令（购买服务器版时才填）</label>"
-                    + "<input name=\"token\" placeholder=\"例如 6587195B\">"
-                    + "<label>城市名（选填）</label><input name=\"city\" placeholder=\"兰山区\">"
-                    + "<div class=\"two\"><div><label>纬度</label><input name=\"lat\" placeholder=\"35.06\" inputmode=\"decimal\"></div>"
-                    + "<div><label>经度</label><input name=\"lon\" placeholder=\"118.35\" inputmode=\"decimal\"></div></div>"
-                    + "<label>高德 Key（单机版天气用，Web服务类型）</label><input name=\"amap_key\" placeholder=\"自己注册的 Key\">"
-                    + "<label>行政区码（6 位）</label><input name=\"adcode\" placeholder=\"371302\" inputmode=\"numeric\">"
+                    + "<input name=\"token\" placeholder=\"例如 6587195B\" value=\"" + attr(token) + "\">"
+                    + "<label>城市名（选填）</label><input name=\"city\" placeholder=\"兰山区\" value=\"" + attr(city) + "\">"
+                    + "<div class=\"two\"><div><label>纬度</label>"
+                    + "<input name=\"lat\" placeholder=\"35.06\" inputmode=\"decimal\" value=\"" + attr(lat) + "\"></div>"
+                    + "<div><label>经度</label>"
+                    + "<input name=\"lon\" placeholder=\"118.35\" inputmode=\"decimal\" value=\"" + attr(lon) + "\"></div></div>"
+                    + "<label>高德 Key（单机版天气用，Web服务类型）</label>"
+                    + "<input name=\"amap_key\" placeholder=\"自己注册的 Key\" value=\"" + attr(key) + "\">"
+                    + "<label>行政区码（6 位）</label>"
+                    + "<input name=\"adcode\" placeholder=\"371302\" inputmode=\"numeric\" value=\"" + attr(adcode) + "\">"
                     + "<button type=\"submit\">保存基本设置到平板</button>"
                     + "</form>"
                     + "<hr><h2>待办编辑</h2>"
