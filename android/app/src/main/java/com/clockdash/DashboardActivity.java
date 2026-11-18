@@ -116,6 +116,10 @@ public class DashboardActivity extends Activity {
     private int mLastListHeight = -1;
     /** 三种行样式实测高度（px）：0=普通 1=最近一条大字 2=上一个待办带框 */
     private final int[] mRowHeights = new int[3];
+    /** 各类型是否已经实测过：行高在一次启动里基本恒定，不必每分钟重新 inflate */
+    private final boolean[] mRowMeasured = new boolean[3];
+    private int mMeasuredWidth = -1;
+    private int mFallbackRowH = 60;
 
     private final Handler mHandler = new Handler();
 
@@ -227,7 +231,7 @@ public class DashboardActivity extends Activity {
                         int h = listTodos.getHeight();
                         if (h > 0 && h != mLastListHeight) {
                             mLastListHeight = h;
-                            recomputeVisibleRows();
+                            recomputeVisibleRows(false);
                         }
                     }
                 });
@@ -888,9 +892,9 @@ public class DashboardActivity extends Activity {
             String hint = Store.serverBase(this) == null ? "离线模式 · 仅时钟日历" : "近期没有安排";
             mRows.add(new String[]{"", hint, "0", "0", "0"});
         }
-        mAdapter.notifyDataSetChanged();
-        // 数据变了（大字行/带框行的位置可能变），按当前可用高度重新算一次能显示几条
-        recomputeVisibleRows();
+        // 数据变了（大字行/带框行的位置可能变），按当前可用高度重新算一次能显示几条；
+        // 列表刷新由 recomputeVisibleRows 统一发一次，避免 notifyDataSetChanged 重复
+        recomputeVisibleRows(true);
         mListBuiltAt = HM_FMT.format(new Date());
         Log.d(TAG, "重排待办 " + mRows.size() + " 行，可显示 " + mVisibleRows
                 + " 行，首行=" + mRows.get(0)[0] + " " + mRows.get(0)[1]);
@@ -906,39 +910,65 @@ public class DashboardActivity extends Activity {
     /**
      * 实测三种行样式的高度。不用数学估算：getView 会覆盖 item_todo 的 XML padding、
      * 大字行 20sp、带框行另有 6dp 内边距，估算很容易偏；直接 measure 一次最准。
-     * 每种类型只测一次，最多 3 次 inflate，每分钟重排的开销可忽略。
+     *
+     * 性能关键：行高只取决于样式 + 屏幕宽度 + 系统字体缩放，与待办内容无关
+     * （标题 maxLines=1、ellipsize）。所以实测结果跨分钟重排复用，只有
+     * 「首次出现的样式」或「宽度变化（转屏/分屏）」才补测，稳态下 0 次 inflate。
      */
     private void measureRowHeights() {
         int w = listTodos.getWidth();
         if (w <= 0) return;
-        java.util.Arrays.fill(mRowHeights, 0);
+        if (w != mMeasuredWidth) {
+            // 宽度变了，行高可能变，全部重新实测
+            java.util.Arrays.fill(mRowMeasured, false);
+            mMeasuredWidth = w;
+        }
         int sw = View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY);
         int sh = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
-        int fallback = 0;
+        int measured = 0, maxH = 0;
         for (int i = 0; i < mRows.size(); i++) {
             int t = rowType(mRows.get(i));
-            if (mRowHeights[t] > 0) continue;
+            if (mRowMeasured[t]) continue;
             // 直接复用适配器渲染逻辑，保证测量高度和真实显示完全一致
             View v = mAdapter.getView(i, null, listTodos);
             v.measure(sw, sh);
             mRowHeights[t] = v.getMeasuredHeight();
-            if (mRowHeights[t] > fallback) fallback = mRowHeights[t];
+            mRowMeasured[t] = true;
+            measured++;
         }
-        if (fallback <= 0) fallback = 60;
-        for (int t = 0; t < mRowHeights.length; t++) {
-            if (mRowHeights[t] <= 0) mRowHeights[t] = fallback;
+        for (int t = 0; t < 3; t++) {
+            if (mRowMeasured[t] && mRowHeights[t] > maxH) maxH = mRowHeights[t];
+        }
+        if (maxH > 0) mFallbackRowH = maxH;
+        // 本轮数据里没出现的样式用最大行高兜底（实际取不到，防御性处理）
+        for (int t = 0; t < 3; t++) {
+            if (!mRowMeasured[t]) mRowHeights[t] = mFallbackRowH;
+        }
+        if (measured > 0) {
+            Log.d(TAG, "实测待办行高 " + measured + " 种："
+                    + mRowHeights[0] + "/" + mRowHeights[1] + "/" + mRowHeights[2]);
         }
     }
 
     /**
      * 按 ListView 的实际高度算出能完整放下几行，超出的不显示（避免列表滚动、
      * 也避免最后一行被裁一半）。屏幕越大显示越多，老平板小屏自动变少。
+     *
+     * @param dataChanged 是否由数据重排触发：true 时必须刷新列表一次；
+     *                    false（仅布局尺寸变化）只在行数真的变化时才刷新。
      */
-    private void recomputeVisibleRows() {
-        if (mRows.isEmpty()) return;
+    private void recomputeVisibleRows(boolean dataChanged) {
+        if (mRows.isEmpty()) {
+            if (dataChanged) mAdapter.notifyDataSetChanged();
+            return;
+        }
         int avail = listTodos.getHeight()
                 - listTodos.getPaddingTop() - listTodos.getPaddingBottom();
-        if (avail <= 0) return;  // 布局还没完成，保留 8 行兜底，等 OnGlobalLayout 回调
+        if (avail <= 0) {
+            // 布局还没完成，保留 8 行兜底，等 OnGlobalLayout 回调；列表仍要刷新
+            if (dataChanged) mAdapter.notifyDataSetChanged();
+            return;
+        }
         measureRowHeights();
         int used = 0, n = 0;
         for (int i = 0; i < mRows.size(); i++) {
@@ -948,14 +978,14 @@ public class DashboardActivity extends Activity {
             n++;
         }
         n = Math.max(1, Math.min(n, mRows.size()));
-        if (n != mVisibleRows) {
-            mVisibleRows = n;
-            mAdapter.notifyDataSetChanged();
-        }
-        // 标题右侧显示可见条数：有截断时提示，全部放得下则留空
+        boolean changed = n != mVisibleRows;
+        mVisibleRows = n;
+        if (dataChanged || changed) mAdapter.notifyDataSetChanged();
+        // 标题右侧显示可见条数：只在文本真的变化时 setText，避免无谓的 requestLayout
         if (tvSyncNote != null) {
-            tvSyncNote.setText(mVisibleRows < mRows.size()
-                    ? "显示 " + mVisibleRows + " / " + mRows.size() + " 条" : "");
+            String label = mVisibleRows < mRows.size()
+                    ? "显示 " + mVisibleRows + " / " + mRows.size() + " 条" : "";
+            if (!label.contentEquals(tvSyncNote.getText())) tvSyncNote.setText(label);
         }
     }
 
