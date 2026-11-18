@@ -315,20 +315,30 @@ public class PairActivity extends Activity {
                 respond(s, msgHtml("配对码不正确，请核对平板上显示的 4 位数字。"));
                 return;
             }
+            // 关键防线：空值绝不覆盖已有配置。v1.38 的页面不预填，用户点一次
+            // 「保存基本设置」就把服务器地址/高德 Key 冲成空串，平板随即失去
+            // 数据源、一直读旧缓存（表现就是天气从 7 天退回 3 天）。
+            // 手机页面现在会预填，这里再做一层保护；要清空请到平板设置页操作。
             String url = trim(p.get("url"));
-            // 服务器地址留空 = 单机模式，不再强制要求填写
+            if (url.length() == 0) url = Prefs.get(mContext, Prefs.K_URL, "");
+            String key = trim(p.get("amap_key"));
+            if (key.length() == 0) key = Prefs.get(mContext, Prefs.K_AMAP_KEY, "");
+            String adcode = trim(p.get("adcode"));
+            if (adcode.length() == 0) adcode = Prefs.get(mContext, Prefs.K_AMAP_ADCODE, "");
             Prefs.put(mContext, Prefs.K_URL, url);
             Prefs.put(mContext, Prefs.K_TOKEN, trim(p.get("token")));
             if (trim(p.get("city")).length() > 0) Prefs.put(mContext, Prefs.K_CITY, trim(p.get("city")));
             if (trim(p.get("lat")).length() > 0) Prefs.put(mContext, Prefs.K_LAT, trim(p.get("lat")));
             if (trim(p.get("lon")).length() > 0) Prefs.put(mContext, Prefs.K_LON, trim(p.get("lon")));
-            // 本机高德 Key：单机的天气源，与平板设置页共用同一组 Prefs
-            Prefs.put(mContext, Prefs.K_AMAP_KEY, trim(p.get("amap_key")));
-            Prefs.put(mContext, Prefs.K_AMAP_ADCODE, trim(p.get("adcode")));
+            Prefs.put(mContext, Prefs.K_AMAP_KEY, key);
+            Prefs.put(mContext, Prefs.K_AMAP_ADCODE, adcode);
             AlarmScheduler.schedulePeriodic(mContext);
-            notifyEvent(url.length() == 0 ? "已保存配置（单机模式）✓" : "已收到并保存新配置 ✓");
-            respond(s, msgHtml("已保存到平板 ✓"
-                    + (url.length() == 0 ? "（未填服务器地址，单机模式）" : "")
+            notifyEvent(url.length() == 0 ? "已保存配置（未设服务器，走本机天气源）✓" : "已收到并保存新配置 ✓");
+            String source = url.length() > 0 ? "服务器版"
+                    : (key.length() > 0 && adcode.length() > 0 ? "本机高德" : "未配置天气源");
+            respond(s, msgHtml("已保存到平板 ✓<br>当前天气源：" + source
+                    + (url.length() == 0 && key.length() == 0
+                       ? "<br>建议填服务器地址，或本机高德 Key + 行政区码，否则只能显示旧缓存" : "")
                     + "<br>请回到平板上点「保存并测试连接」确认。"));
         }
 
