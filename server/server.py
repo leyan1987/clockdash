@@ -291,10 +291,20 @@ def load_json(path, default):
 
 
 def atomic_write(path, text):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, path)
+    # 临时文件名必须唯一：多线程/多进程同时写同一路径时，固定的 path+".tmp"
+    # 会被另一个线程清空或先 os.replace 掉，导致 FileNotFoundError 或半截 JSON
+    # （压测中 20 并发写 config 出现 10 个 500，根因就是这个）。
+    tmp = "%s.%s.%s.tmp" % (path, threading.get_ident(), secrets.token_hex(4))
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 # ---------- 在线看护：设备心跳 / 失联告警 / 服务器主动留言 ----------
@@ -1391,9 +1401,13 @@ class Handler(SimpleHTTPRequestHandler):
                     return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
                 return self._handle_message(doc, dev)
             if p == "/api/users":
-                return self._handle_users(doc)
+                # 用户/设备库同样是读-改-写，低频但也必须串行（RLock 可重入，
+                # _handle_users 内部 drop_user_sessions 也会取同一把锁）
+                with _SAVE_LOCK:
+                    return self._handle_users(doc)
             if p == "/api/devices":
-                return self._handle_devices(doc)
+                with _SAVE_LOCK:
+                    return self._handle_devices(doc)
             if p == "/api/todos":
                 dev = self._resolve_dev(a)
                 if dev is None:
@@ -1440,7 +1454,6 @@ class Handler(SimpleHTTPRequestHandler):
             dev = self._resolve_dev(a)
             if dev is None:
                 return self._send_json({"error": "未指定有效设备（缺 devid）"}, 400)
-            cfg = load_json(config_path(dev), {})
             # 高德 Key/行政区划仅管理员可设置，普通用户推送时忽略这两项，
             # 防止网页端空白字段把管理员配置的 Key 冲掉
             keys = ("city", "lat", "lon", "night_start", "night_end",
@@ -1448,20 +1461,25 @@ class Handler(SimpleHTTPRequestHandler):
                     "amap_key", "adcode")
             if a.get("role") != "admin":
                 keys = tuple(k for k in keys if k not in ("amap_key", "adcode"))
-            for k in keys:
-                if k in doc:
-                    cfg[k] = doc[k]
-            cfg["rev"] = int(cfg.get("rev", 0)) + 1
-            atomic_write(config_path(dev), json.dumps(cfg, ensure_ascii=False, indent=2))
-            # 口令组：同口令的其他设备写入同一份配置（同 rev），一次推送全组生效
-            for gid in token_group(dev):
-                if gid == dev:
-                    continue
-                try:
-                    atomic_write(config_path(gid), json.dumps(cfg, ensure_ascii=False, indent=2))
-                except Exception:
-                    pass
-            return self._send_json({"ok": True, "rev": cfg["rev"]})
+            # 整段读-改-写必须在锁内：否则两个管理员同时推送配置会互相覆盖，
+            # rev 也会丢失递增（压测 20 并发只得到 3 个有效 rev + 10 个 500）。
+            with _SAVE_LOCK:
+                cfg = load_json(config_path(dev), {})
+                for k in keys:
+                    if k in doc:
+                        cfg[k] = doc[k]
+                cfg["rev"] = int(cfg.get("rev", 0)) + 1
+                rev = cfg["rev"]
+                atomic_write(config_path(dev), json.dumps(cfg, ensure_ascii=False, indent=2))
+                # 口令组：同口令的其他设备写入同一份配置（同 rev），一次推送全组生效
+                for gid in token_group(dev):
+                    if gid == dev:
+                        continue
+                    try:
+                        atomic_write(config_path(gid), json.dumps(cfg, ensure_ascii=False, indent=2))
+                    except Exception:
+                        pass
+            return self._send_json({"ok": True, "rev": rev})
         except ValueError as e:
             return self._send_json({"error": str(e)}, 400)
         except Exception as e:
