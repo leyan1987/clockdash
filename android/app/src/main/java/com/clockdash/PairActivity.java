@@ -109,8 +109,8 @@ public class PairActivity extends Activity {
 
         TextView help = new TextView(this);
         help.setText("1. 用手机扫左侧二维码（需与平板同一 WiFi）\n"
-                + "2. 在手机网页里填写服务器地址、口令等\n"
-                + "3. 点“保存到平板”，这里显示成功即生效\n\n"
+                + "2. 上半页填设置：服务器地址/口令，单机版留空并填高德 Key+行政区码\n"
+                + "3. 下半页增删改待办，点「保存待办到平板」后闹钟自动重排\n\n"
                 + "平板地址: " + ip + ":" + port + "\n"
                 + "提交时需要填屏幕上的 4 位配对码");
         help.setTextColor(getResources().getColor(R.color.muted));
@@ -281,10 +281,14 @@ public class PairActivity extends Activity {
                     body = new String(buf, 0, n);
                 }
 
+                String qpin = queryParam(path, "pin");
                 if ("POST".equals(method) && path.startsWith("/save")) {
                     doSave(s, body);
+                } else if ("POST".equals(method) && path.startsWith("/todos")) {
+                    doTodosSave(s, body, qpin);
+                } else if ("GET".equals(method) && path.startsWith("/todos")) {
+                    doTodosGet(s, qpin);
                 } else {
-                    String qpin = queryParam(path, "pin");
                     respond(s, pageHtml(qpin));
                 }
                 try {
@@ -312,18 +316,53 @@ public class PairActivity extends Activity {
                 return;
             }
             String url = trim(p.get("url"));
-            if (url.length() == 0) {
-                respond(s, msgHtml("服务器地址不能为空。"));
-                return;
-            }
+            // 服务器地址留空 = 单机模式，不再强制要求填写
             Prefs.put(mContext, Prefs.K_URL, url);
             Prefs.put(mContext, Prefs.K_TOKEN, trim(p.get("token")));
             if (trim(p.get("city")).length() > 0) Prefs.put(mContext, Prefs.K_CITY, trim(p.get("city")));
             if (trim(p.get("lat")).length() > 0) Prefs.put(mContext, Prefs.K_LAT, trim(p.get("lat")));
             if (trim(p.get("lon")).length() > 0) Prefs.put(mContext, Prefs.K_LON, trim(p.get("lon")));
+            // 本机高德 Key：单机的天气源，与平板设置页共用同一组 Prefs
+            Prefs.put(mContext, Prefs.K_AMAP_KEY, trim(p.get("amap_key")));
+            Prefs.put(mContext, Prefs.K_AMAP_ADCODE, trim(p.get("adcode")));
             AlarmScheduler.schedulePeriodic(mContext);
-            notifyEvent("已收到并保存新配置 ✓ 返回设置页可见");
-            respond(s, msgHtml("已保存到平板 ✓<br>请回到平板上点「保存并测试连接」确认。"));
+            notifyEvent(url.length() == 0 ? "已保存配置（单机模式）✓" : "已收到并保存新配置 ✓");
+            respond(s, msgHtml("已保存到平板 ✓"
+                    + (url.length() == 0 ? "（未填服务器地址，单机模式）" : "")
+                    + "<br>请回到平板上点「保存并测试连接」确认。"));
+        }
+
+        /** 手机读取当前待办（单机版编辑页的数据源） */
+        private void doTodosGet(Socket s, String pin) {
+            if (!mPin.equals(pin)) {
+                notifyEvent("手机读取待办时配对码错误，已拒绝");
+                respondJson(s, "{\"ok\":false,\"error\":\"配对码不正确\"}");
+                return;
+            }
+            respondJson(s, Store.loadTodosJson(mContext));
+        }
+
+        /** 手机保存整份待办到本地缓存，并重排提醒闹钟 */
+        private void doTodosSave(Socket s, String body, String pin) {
+            if (!mPin.equals(pin)) {
+                notifyEvent("手机提交待办时配对码错误，已拒绝");
+                respondJson(s, "{\"ok\":false,\"error\":\"配对码不正确\"}");
+                return;
+            }
+            Map<String, String> p = parseForm(body);
+            String data = trim(p.get("data"));
+            if (data.length() == 0) {
+                respondJson(s, "{\"ok\":false,\"error\":\"数据为空\"}");
+                return;
+            }
+            if (Store.saveLocalTodos(mContext, data)) {
+                AlarmScheduler.scheduleRemindersAsync(mContext);
+                int n = Store.loadTodosCache(mContext).size();
+                notifyEvent("已保存 " + n + " 条待办，闹钟已重排 ✓");
+                respondJson(s, "{\"ok\":true,\"count\":" + n + "}");
+            } else {
+                respondJson(s, "{\"ok\":false,\"error\":\"格式不对：标题/日期/时间必填，重复类型需合法\"}");
+            }
         }
 
         private static String trim(String v) {
@@ -355,11 +394,19 @@ public class PairActivity extends Activity {
         }
 
         private static void respond(Socket s, String html) {
+            respond(s, html, "text/html; charset=utf-8");
+        }
+
+        private static void respondJson(Socket s, String json) {
+            respond(s, json, "application/json; charset=utf-8");
+        }
+
+        private static void respond(Socket s, String text, String contentType) {
             try {
-                byte[] b = html.getBytes("UTF-8");
+                byte[] b = text.getBytes("UTF-8");
                 StringBuilder h = new StringBuilder();
                 h.append("HTTP/1.1 200 OK\r\n");
-                h.append("Content-Type: text/html; charset=utf-8\r\n");
+                h.append("Content-Type: ").append(contentType).append("\r\n");
                 h.append("Content-Length: ").append(b.length).append("\r\n");
                 h.append("Connection: close\r\n\r\n");
                 s.getOutputStream().write(h.toString().getBytes("ISO-8859-1"));
@@ -367,6 +414,58 @@ public class PairActivity extends Activity {
                 s.getOutputStream().flush();
             } catch (Exception ignored) {
             }
+        }
+
+        /** 待办编辑页脚本：无框架，手机自带浏览器即可用 */
+        private static String todoJs(String pin) {
+            return ""
+                    + "var PIN='" + pin + "',todos=[];"
+                    + "var REPS=[['none','不重复'],['hourly','每小时'],['daily','每天'],"
+                    + "['weekly','每周'],['monthly','每月'],['yearly','每年']];"
+                    + "function esc(s){s=String(s==null?'':s);return s.split('&').join('&amp;')"
+                    + ".split('<').join('&lt;').split('>').join('&gt;')"
+                    + ".split(String.fromCharCode(34)).join('&quot;');}"
+                    + "function opts(c){var s='';for(var i=0;i<REPS.length;i++){"
+                    + "s+='<option value=\"'+REPS[i][0]+'\"'+(REPS[i][0]==c?' selected':'')"
+                    + "+'>'+REPS[i][1]+'</option>';}return s;}"
+                    + "function render(){var h='';for(var i=0;i<todos.length;i++){var t=todos[i];"
+                    + "h+='<div class=row><div class=hd><b>第'+(i+1)+'条</b>"
+                    + "<button type=button onclick=del('+i+')>删除</button></div>"
+                    + "<label>标题</label><input id=t'+i+' value=\"'+esc(t.title)+'\">"
+                    + "<div class=two><div><label>日期</label><input type=date id=d'+i+' value=\"'+esc(t.date)+'\"></div>"
+                    + "<div><label>时间</label><input type=time id=m'+i+' value=\"'+esc(t.time)+'\"></div></div>"
+                    + "<div class=two><div><label>重复</label><select id=r'+i+'>'+opts(t.repeat)+'</select></div>"
+                    + "<div><label>提前提醒(分钟)</label><input type=number id=v'+i+' value='+(t.remind||0)+'></div></div>"
+                    + "<div class=two><div><label>间隔 N</label><input type=number min=1 id=i'+i+' value='+(t.interval||1)+'></div>"
+                    + "<div><label>星期(1=周一,逗号分隔)</label><input id=w'+i+' value=\"'"
+                    + "+esc((t.weekdays||[]).join(','))+'\"></div></div>"
+                    + "<label>结束日期(选填)</label><input type=date id=e'+i+' value=\"'+esc(t.end||'')+'\">"
+                    + "</div>';}document.getElementById('rows').innerHTML=h;}"
+                    + "function val(id){var e=document.getElementById(id);return e?e.value.trim():'';}"
+                    + "function collect(){var out=[];for(var i=0;i<todos.length;i++){"
+                    + "var t={id:todos[i].id||('t'+Date.now()+'_'+i),title:val('t'+i),"
+                    + "date:val('d'+i),time:val('m'+i),repeat:val('r'+i),"
+                    + "remind:parseInt(val('v'+i),10)||0,interval:parseInt(val('i'+i),10)||1};"
+                    + "var w=val('w'+i);if(w){var a=[];var ps=w.split(',');for(var j=0;j<ps.length;j++){"
+                    + "var n=parseInt(ps[j],10);if(n>=1&&n<=7)a.push(n);}if(a.length)t.weekdays=a;}"
+                    + "var e=val('e'+i);if(e)t.end=e;out.push(t);}return out;}"
+                    + "function del(i){todos.splice(i,1);render();}"
+                    + "function add(){todos.push({title:'',date:'',time:'08:00',repeat:'none',remind:0,interval:1});render();}"
+                    + "function tip(s){document.getElementById('msg').textContent=s;}"
+                    + "function load(){var x=new XMLHttpRequest();x.onreadystatechange=function(){"
+                    + "if(x.readyState==4&&x.status==200){try{var j=JSON.parse(x.responseText);"
+                    + "todos=j.todos||[];render();tip('已读取 '+todos.length+' 条待办');}"
+                    + "catch(e){tip('读取失败');}}};x.open('GET','/todos?pin='+encodeURIComponent(PIN),true);x.send();}"
+                    + "function save(){var data=JSON.stringify({todos:collect()});"
+                    + "var body='pin='+encodeURIComponent(PIN)+'&data='+encodeURIComponent(data);"
+                    + "var x=new XMLHttpRequest();x.onreadystatechange=function(){"
+                    + "if(x.readyState==4&&x.status==200){try{var j=JSON.parse(x.responseText);"
+                    + "tip(j.ok?('已保存 '+j.count+' 条待办 ✓'):('失败：'+j.error));}"
+                    + "catch(e){tip('保存失败');}}};x.open('POST','/todos',true);"
+                    + "x.setRequestHeader('Content-Type','application/x-www-form-urlencoded; charset=UTF-8');x.send(body);}"
+                    + "document.getElementById('addBtn').onclick=add;"
+                    + "document.getElementById('saveBtn').onclick=save;"
+                    + "load();";
         }
 
         private static String pageHtml(String pin) {
@@ -379,22 +478,38 @@ public class PairActivity extends Activity {
                     + "input{width:100%;box-sizing:border-box;padding:10px;font-size:16px;border:1px solid #dde4ea;border-radius:8px}"
                     + "button{margin-top:20px;width:100%;padding:12px;font-size:17px;border:0;border-radius:8px;"
                     + "background:#2f7fd1;color:#fff} .tip{font-size:12.5px;color:#66788a;margin-top:14px}"
+                    + ".row{border:1px solid #dde4ea;border-radius:10px;padding:10px;margin-top:12px}"
+                    + ".hd{display:flex;justify-content:space-between;align-items:center}"
+                    + ".hd button{margin:0;width:auto;padding:4px 12px;font-size:13px;background:#e6ebf1;color:#d05a4e}"
+                    + ".two{display:flex;gap:8px}.two>div{flex:1;min-width:0}"
+                    + "select{width:100%;box-sizing:border-box;padding:9px;font-size:16px;"
+                    + "border:1px solid #dde4ea;border-radius:8px;background:#fff}"
+                    + "hr{margin:20px 0;border:0;border-top:1px solid #dde4ea}"
+                    + "#msg{color:#2e9e5b;font-size:14px;margin-top:10px}"
                     + "</style></head><body>"
-                    + "<h2>配置时钟看板</h2>"
+                    + "<h2>配置时钟看板 · 单机版</h2>"
                     + "<form method=\"POST\" action=\"/save\">"
                     + "<label>配对码（平板屏幕上的 4 位数字）</label>"
                     + "<input name=\"pin\" required maxlength=\"4\" inputmode=\"numeric\" value=\"" + pin + "\">"
-                    + "<label>服务器地址</label>"
-                    + "<input name=\"url\" required placeholder=\"http://123.45.67.89:8765\">"
-                    + "<label>口令（服务器 data/server-token.txt）</label>"
+                    + "<label>服务器地址（单机版留空）</label>"
+                    + "<input name=\"url\" placeholder=\"http://123.45.67.89:8765\">"
+                    + "<label>口令（购买服务器版时才填）</label>"
                     + "<input name=\"token\" placeholder=\"例如 6587195B\">"
-                    + "<label>城市名（选填）</label><input name=\"city\" placeholder=\"北京\">"
-                    + "<label>纬度（选填，Open-Meteo 兜底用）</label><input name=\"lat\" placeholder=\"39.90\" inputmode=\"decimal\">"
-                    + "<label>经度（选填）</label><input name=\"lon\" placeholder=\"116.40\" inputmode=\"decimal\">"
-                    + "<button type=\"submit\">保存到平板</button>"
+                    + "<label>城市名（选填）</label><input name=\"city\" placeholder=\"兰山区\">"
+                    + "<div class=\"two\"><div><label>纬度</label><input name=\"lat\" placeholder=\"35.06\" inputmode=\"decimal\"></div>"
+                    + "<div><label>经度</label><input name=\"lon\" placeholder=\"118.35\" inputmode=\"decimal\"></div></div>"
+                    + "<label>高德 Key（单机版天气用，Web服务类型）</label><input name=\"amap_key\" placeholder=\"自己注册的 Key\">"
+                    + "<label>行政区码（6 位）</label><input name=\"adcode\" placeholder=\"371302\" inputmode=\"numeric\">"
+                    + "<button type=\"submit\">保存基本设置到平板</button>"
                     + "</form>"
-                    + "<p class=\"tip\">提交后立即生效。高德天气 Key、夜间模式等进阶设置，"
-                    + "配置好服务器后在网页后台推送即可。</p>"
+                    + "<hr><h2>待办编辑</h2>"
+                    + "<p class=\"tip\">单机版待办存在平板本机。改完点「保存待办到平板」，提醒闹钟自动重排。</p>"
+                    + "<div id=\"rows\"></div>"
+                    + "<button type=\"button\" id=\"addBtn\">＋ 添加一条</button>"
+                    + "<button type=\"button\" id=\"saveBtn\">保存待办到平板</button>"
+                    + "<div id=\"msg\"></div>"
+                    + "<p class=\"tip\">星期留空表示跟随开始日期的星期；间隔 N 用于循环规则。</p>"
+                    + "<script>" + todoJs(pin) + "</script>"
                     + "</body></html>";
         }
 

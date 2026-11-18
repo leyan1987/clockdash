@@ -70,6 +70,47 @@ public final class Store {
         return l == null ? new ArrayList<Todo>() : l;
     }
 
+    /** 本地配置页读取待办原文；无缓存时给出空列表结构 */
+    public static String loadTodosJson(Context c) {
+        String s = readPrivate(c, TODOS_CACHE);
+        return (s == null || s.length() == 0) ? "{\"version\":1,\"rev\":0,\"todos\":[]}" : s;
+    }
+
+    /**
+     * 本地配置页保存整份待办（单机版的核心写路径）。
+     * 校验规则与服务端 validate_todos 对齐，避免写坏缓存导致待办全空。
+     * 成功后 rev +1，界面按 mtime 变化重绘，闹钟由调用方重排。
+     */
+    public static boolean saveLocalTodos(Context c, String json) {
+        try {
+            JSONObject root = new JSONObject(json);
+            JSONArray arr = root.optJSONArray("todos");
+            if (arr == null) return false;
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) return false;
+                String title = o.optString("title", "").trim();
+                String date = o.optString("date", "");
+                String time = o.optString("time", "");
+                String rep = o.optString("repeat", "none");
+                if (title.length() == 0 || date.length() != 10 || time.length() != 5) return false;
+                if (!"none,hourly,daily,weekly,monthly,yearly".contains(rep)) return false;
+            }
+            JSONObject out = new JSONObject();
+            out.put("version", 1);
+            out.put("rev", Prefs.getInt(c, Prefs.K_TODO_REV, 0) + 1);
+            out.put("todos", arr);
+            writePrivate(c, TODOS_CACHE, out.toString());
+            // writePrivate 会吞掉异常，读回确认真的写进去了
+            String check = readPrivate(c, TODOS_CACHE);
+            if (check == null || !check.equals(out.toString())) return false;
+            Prefs.put(c, Prefs.K_TODO_REV, String.valueOf(out.getInt("rev")));
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /** 从服务器拉取待办并写缓存；成功返回列表，失败返回 null（保留旧缓存） */
     public static List<Todo> fetchTodos(Context c) {
         String base = serverBase(c);
