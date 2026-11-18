@@ -61,7 +61,7 @@
   .todohead { font-size: clamp(15px, 2.3vh, 21px); font-weight: 500; }
   #todoNote { font-size: clamp(10px, 1.4vh, 12px); color: #5c6a76; margin-left: 8px; }
   #todoList { flex: 1; margin-top: 1vh; display: flex; flex-direction: column;
-              justify-content: flex-start; gap: 1.4vh; min-height: 0; }
+              justify-content: flex-start; gap: 1.4vh; min-height: 0; overflow: hidden; }
   .trow { display: flex; align-items: baseline; gap: 1vw; min-width: 0; }
   .trow .when { flex: none; width: 7.5em; font-size: clamp(11px, 1.8vh, 16px); color: #8fa0af; }
   .trow .what { font-size: clamp(13px, 2.2vh, 19px); white-space: nowrap;
@@ -602,6 +602,8 @@ $("dpClose").addEventListener("click", function () { $("dayPop").style.display =
 $("dayPop").addEventListener("click", function (e) { if (e.target === this) this.style.display = "none"; });
 
 /* ================= 近期待办 ================= */
+/* DOM 里最多渲染的候选条数（绝对上限）；真正显示几条由 applyVisibleRows 按高度决定 */
+var MAX_TODO_ROWS = 24;
 function buildTodoRows() {
   var now = new Date();
   var horizon = new Date(now.getTime() + 7 * 86400000);
@@ -613,7 +615,7 @@ function buildTodoRows() {
   list.sort(function (a, b) { return a.occ - b.occ; });
   var html = "";
   var shown = 0;
-  for (var j = 0; j < list.length && shown < 8; j++) {
+  for (var j = 0; j < list.length && shown < MAX_TODO_ROWS; j++) {
     var occ = list[j].occ, title = list[j].title;
     var isToday = sameDay(occ, now);
     var isTomorrow = !isToday && sameDay(occ, addDays(now, 1));
@@ -626,7 +628,53 @@ function buildTodoRows() {
   }
   if (!shown) html = '<div class="trow"><span class="what" style="color:#5c6a76">近期没有安排</span></div>';
   $("todoList").innerHTML = html;
+  applyVisibleRows();
 }
+
+/**
+ * 按 #todoList 的实际可用高度决定显示几条待办。
+ * 先把候选行全部展开，逐行累加真实高度（含 flex gap），放不下的隐藏。
+ * 这样全屏切换、横竖屏、不同分辨率/缩放都能自适应，且不用去估算
+ * clamp() 字号、vh 与字体行高——第 1 行大字、不同内容高度都自动算准。
+ */
+function applyVisibleRows() {
+  var box = $("todoList");
+  if (!box) return;
+  var rows = box.children;
+  if (!rows.length) return;
+  var limit = box.clientHeight;
+  if (limit <= 0) return;
+  var cs = getComputedStyle(box);
+  var gap = parseFloat(cs.rowGap || cs.gap || "0") || 0;
+  for (var i = 0; i < rows.length; i++) rows[i].style.display = "";
+  var used = 0, visible = 0;
+  for (var j = 0; j < rows.length; j++) {
+    var add = rows[j].getBoundingClientRect().height + (j > 0 ? gap : 0);
+    if (used + add > limit + 2) break;  // 2px 容差：避免亚像素误差白白少显示一行
+    used += add;
+    visible++;
+  }
+  // 容器再矮也至少留 1 行，避免极端分屏/极小窗口时右栏整块空白
+  // （超出的部分由 #todoList 的 overflow:hidden 裁掉）
+  if (visible === 0 && rows.length) visible = 1;
+  for (var k = visible; k < rows.length; k++) rows[k].style.display = "none";
+  var note = $("todoNote");
+  if (note) {
+    note.textContent = visible < rows.length
+      ? "显示 " + visible + " / " + rows.length + " 条" : "来自服务器";
+  }
+}
+
+/* 视口变化（resize / 转屏 / 全屏）后 vh 与 clamp 会重算，延时一帧再测量 */
+var refitTimer = null;
+function refitTodos() {
+  clearTimeout(refitTimer);
+  refitTimer = setTimeout(function () { requestAnimationFrame(applyVisibleRows); }, 120);
+}
+window.addEventListener("resize", refitTodos);
+window.addEventListener("orientationchange", refitTodos);
+document.addEventListener("fullscreenchange", refitTodos);
+
 function sameDay(a, b) {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }

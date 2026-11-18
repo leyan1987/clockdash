@@ -25,6 +25,7 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.view.WindowManager;
 import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
@@ -58,6 +59,8 @@ public class DashboardActivity extends Activity {
     private static final long DATA_STALE_MS = 90L * 60000L;
     /** 心跳发起网络动作的最小间隔，与正常轻量检查的 5 分钟节奏一致 */
     private static final long HEAL_NET_GAP_MS = 5L * 60000L;
+    /** 待办候选行的绝对上限（真正显示几条由可用高度决定），防止极端情况无限渲染 */
+    private static final int MAX_TODO_ROWS = 24;
 
     private TextView tvClock, tvDate, tvTemp, tvCond, tvCity, tvMeta, tvStatus, tvSyncNote;
     private TextView tvCalTitle, tvCalYear;
@@ -107,6 +110,12 @@ public class DashboardActivity extends Activity {
     private boolean mHeartbeatActive = false;
     /** 最后一次收到闹钟广播的 HH:mm，未收到过则为“从未” */
     private String mLastAlarmText = "从未";
+    /** 按 ListView 实际高度算出的可显示行数；布局测量前用 8 兜底 */
+    private int mVisibleRows = 8;
+    /** 上次测量时的 ListView 高度，用于判断是否需要在尺寸变化时重算 */
+    private int mLastListHeight = -1;
+    /** 三种行样式实测高度（px）：0=普通 1=最近一条大字 2=上一个待办带框 */
+    private final int[] mRowHeights = new int[3];
 
     private final Handler mHandler = new Handler();
 
@@ -208,6 +217,20 @@ public class DashboardActivity extends Activity {
 
         buildCalendarPool();
         listTodos.setAdapter(mAdapter);
+
+        // 待办行数按右栏实际高度自适应：ListView 布局完成（或转屏、分屏改变尺寸）后重算。
+        // 只在高度真的变化时触发，notifyDataSetChanged 引起的再次 layout 不会递归。
+        listTodos.getViewTreeObserver().addOnGlobalLayoutListener(
+                new ViewTreeObserver.OnGlobalLayoutListener() {
+                    @Override
+                    public void onGlobalLayout() {
+                        int h = listTodos.getHeight();
+                        if (h > 0 && h != mLastListHeight) {
+                            mLastListHeight = h;
+                            recomputeVisibleRows();
+                        }
+                    }
+                });
 
         // 触摸不灵敏的保底入口：右上角连点 3 次 / 时钟长按 / 菜单键
         findViewById(R.id.root).setOnTouchListener(new View.OnTouchListener() {
@@ -848,7 +871,7 @@ public class DashboardActivity extends Activity {
             // 不写"上一个"字样，时间标签短不折行，靠边框区分
             mRows.add(new String[]{relDay(pc, nowC), prevTitle, "0", "0", "1"});
         }
-        for (int i = 0; i < occs.size() && mRows.size() < 8; i++) {
+        for (int i = 0; i < occs.size() && mRows.size() < MAX_TODO_ROWS; i++) {
             long occ = ((Long) occs.get(i)[0]).longValue();
             String title = (String) occs.get(i)[1];
             Calendar c = Calendar.getInstance();
@@ -866,8 +889,74 @@ public class DashboardActivity extends Activity {
             mRows.add(new String[]{"", hint, "0", "0", "0"});
         }
         mAdapter.notifyDataSetChanged();
+        // 数据变了（大字行/带框行的位置可能变），按当前可用高度重新算一次能显示几条
+        recomputeVisibleRows();
         mListBuiltAt = HM_FMT.format(new Date());
-        Log.d(TAG, "重排待办 " + mRows.size() + " 行，首行=" + mRows.get(0)[0] + " " + mRows.get(0)[1]);
+        Log.d(TAG, "重排待办 " + mRows.size() + " 行，可显示 " + mVisibleRows
+                + " 行，首行=" + mRows.get(0)[0] + " " + mRows.get(0)[1]);
+    }
+
+    /** 行样式分类，与 TodoAdapter.getView 的渲染分支保持一致 */
+    private static int rowType(String[] r) {
+        if (r.length > 4 && "1".equals(r[4])) return 2;  // 上一个待办（带框）
+        if ("1".equals(r[3])) return 1;                  // 最近一条（大字）
+        return 0;
+    }
+
+    /**
+     * 实测三种行样式的高度。不用数学估算：getView 会覆盖 item_todo 的 XML padding、
+     * 大字行 20sp、带框行另有 6dp 内边距，估算很容易偏；直接 measure 一次最准。
+     * 每种类型只测一次，最多 3 次 inflate，每分钟重排的开销可忽略。
+     */
+    private void measureRowHeights() {
+        int w = listTodos.getWidth();
+        if (w <= 0) return;
+        java.util.Arrays.fill(mRowHeights, 0);
+        int sw = View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY);
+        int sh = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        int fallback = 0;
+        for (int i = 0; i < mRows.size(); i++) {
+            int t = rowType(mRows.get(i));
+            if (mRowHeights[t] > 0) continue;
+            // 直接复用适配器渲染逻辑，保证测量高度和真实显示完全一致
+            View v = mAdapter.getView(i, null, listTodos);
+            v.measure(sw, sh);
+            mRowHeights[t] = v.getMeasuredHeight();
+            if (mRowHeights[t] > fallback) fallback = mRowHeights[t];
+        }
+        if (fallback <= 0) fallback = 60;
+        for (int t = 0; t < mRowHeights.length; t++) {
+            if (mRowHeights[t] <= 0) mRowHeights[t] = fallback;
+        }
+    }
+
+    /**
+     * 按 ListView 的实际高度算出能完整放下几行，超出的不显示（避免列表滚动、
+     * 也避免最后一行被裁一半）。屏幕越大显示越多，老平板小屏自动变少。
+     */
+    private void recomputeVisibleRows() {
+        if (mRows.isEmpty()) return;
+        int avail = listTodos.getHeight()
+                - listTodos.getPaddingTop() - listTodos.getPaddingBottom();
+        if (avail <= 0) return;  // 布局还没完成，保留 8 行兜底，等 OnGlobalLayout 回调
+        measureRowHeights();
+        int used = 0, n = 0;
+        for (int i = 0; i < mRows.size(); i++) {
+            int h = mRowHeights[rowType(mRows.get(i))];
+            if (used + h > avail) break;
+            used += h;
+            n++;
+        }
+        n = Math.max(1, Math.min(n, mRows.size()));
+        if (n != mVisibleRows) {
+            mVisibleRows = n;
+            mAdapter.notifyDataSetChanged();
+        }
+        // 标题右侧显示可见条数：有截断时提示，全部放得下则留空
+        if (tvSyncNote != null) {
+            tvSyncNote.setText(mVisibleRows < mRows.size()
+                    ? "显示 " + mVisibleRows + " / " + mRows.size() + " 条" : "");
+        }
     }
 
     /** 相对日期标签：今天/昨天 HH:mm，更旧则 MM-dd HH:mm */
@@ -888,7 +977,8 @@ public class DashboardActivity extends Activity {
     private class TodoAdapter extends BaseAdapter {
         @Override
         public int getCount() {
-            return mRows.size();
+            // 只显示能完整放进右栏的行数，屏幕越大显示越多
+            return Math.min(mRows.size(), mVisibleRows);
         }
 
         @Override
