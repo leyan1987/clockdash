@@ -61,6 +61,13 @@ public class DashboardActivity extends Activity {
     private static final long HEAL_NET_GAP_MS = 5L * 60000L;
     /** 待办候选行的绝对上限（真正显示几条由可用高度决定），防止极端情况无限渲染 */
     private static final int MAX_TODO_ROWS = 24;
+    /**
+     * 「近期待办」的前瞻窗口。原先只有 7 天，8 天以后的单次日程（例如
+     * 11-18 看不到 11-26 的「治牙董大夫」）完全不会被展开，看起来像是
+     * 行数被限制住了。放宽到 30 天覆盖整月；循环日程每条仍只取最近一次
+     * 发生，Recur.CAP=300 兜底，不会把列表撑爆。
+     */
+    private static final long TODO_HORIZON_MS = 30L * 86400000L;
 
     private TextView tvClock, tvDate, tvTemp, tvCond, tvCity, tvMeta, tvStatus, tvSyncNote;
     private TextView tvCalTitle, tvCalYear;
@@ -843,7 +850,7 @@ public class DashboardActivity extends Activity {
         String prevTitle = null;
         for (int i = 0; i < mTodos.size(); i++) {
             Todo t = mTodos.get(i);
-            ArrayList<Long> list = Recur.expand(t, lookback, now + 7L * 86400000L);
+            ArrayList<Long> list = Recur.expand(t, lookback, now + TODO_HORIZON_MS);
             if (list.isEmpty()) continue;
             for (int k = 0; k < list.size(); k++) {
                 long occ = list.get(k).longValue();
@@ -983,8 +990,11 @@ public class DashboardActivity extends Activity {
         if (dataChanged || changed) mAdapter.notifyDataSetChanged();
         // 标题右侧显示可见条数：只在文本真的变化时 setText，避免无谓的 requestLayout
         if (tvSyncNote != null) {
+            // 始终显示条数，便于确认「自适应行数」确实在跑（否则全放得下时
+            // 标签空白，容易误以为还是固定 8 行）
             String label = mVisibleRows < mRows.size()
-                    ? "显示 " + mVisibleRows + " / " + mRows.size() + " 条" : "";
+                    ? "显示 " + mVisibleRows + " / " + mRows.size() + " 条"
+                    : "共 " + mRows.size() + " 条";
             if (!label.contentEquals(tvSyncNote.getText())) tvSyncNote.setText(label);
         }
     }

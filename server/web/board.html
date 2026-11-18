@@ -604,9 +604,11 @@ $("dayPop").addEventListener("click", function (e) { if (e.target === this) this
 /* ================= 近期待办 ================= */
 /* DOM 里最多渲染的候选条数（绝对上限）；真正显示几条由 applyVisibleRows 按高度决定 */
 var MAX_TODO_ROWS = 24;
+/* 前瞻窗口 30 天：原先 7 天会让 8 天以后的单次日程完全不出现（看起来像行数被截断） */
+var TODO_HORIZON_DAYS = 30;
 function buildTodoRows() {
   var now = new Date();
-  var horizon = new Date(now.getTime() + 7 * 86400000);
+  var horizon = new Date(now.getTime() + TODO_HORIZON_DAYS * 86400000);
   var list = [];
   for (var i = 0; i < todos.length; i++) {
     var occs = expandRule(todos[i], now, horizon);
@@ -661,7 +663,8 @@ function applyVisibleRows() {
   var note = $("todoNote");
   if (note) {
     note.textContent = visible < rows.length
-      ? "显示 " + visible + " / " + rows.length + " 条" : "来自服务器";
+      ? "显示 " + visible + " / " + rows.length + " 条"
+      : "共 " + rows.length + " 条";
   }
 }
 
