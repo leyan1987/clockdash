@@ -29,9 +29,12 @@
 下一次轮询带回，属于"离线消息补发"，无需改平板、不增加耗电。
 
 鉴权两通道：
-  设备口令 token（平板/链接直达，权限等同管理员）
+  设备口令 token（平板/链接直达，仅管理员权限，管理面接口需 admin 会话）
   网页会话 X-Session（/api/login 签发，30 天有效）
 用户库 data/users.json（PBKDF2 加盐哈希）；初始用户 admin 口令 = 设备口令
+令牌落盘：devices.json 存 token_hash(PBKDF2) + group_key(分组用)，不存明文；
+          sessions.json 的 key 是 sha256(sid)，文件泄露无法冒用会话。
+         旧明文格式在验证成功时自动升级，无需用户重配平板。
 
 用法：
   python server.py [端口]        默认端口 8765
@@ -69,7 +72,8 @@ WATCH_STATE_FILE = os.path.join(DATA_DIR, "watchdog-state.json")
 
 SESSION_TTL = 30 * 86400   # 网页登录会话有效期 30 天
 _LOGIN_FAIL = {"count": 0, "until": 0.0}   # 登录失败全局退避：并行爆破也被拖慢
-_PBKDF2_ITER = 100000      # 口令哈希迭代次数
+_PBKDF2_ITER = 600000      # 口令哈希迭代次数（旧哈希自带 iterations 字段，验证时按各自迭代数走，平滑升级）
+_TOKEN_FILE_FMT = "token_hash_v1"
 _SERVER_START = time.time()  # 用于避免服务刚重启、平板还没首次上报时的误报
 
 REPEATS = ("none", "hourly", "daily", "weekly", "monthly", "yearly")
@@ -77,12 +81,17 @@ REPEATS = ("none", "hourly", "daily", "weekly", "monthly", "yearly")
 _SAVE_LOCK = threading.RLock()  # 可重入：bump_todo_rev 会在外层持锁时被调用
 
 
+def new_global_token():
+    """新全局口令：16 位 hex（64bit）。老平板手填可接受，配合登录退避足够抗爆破。
+    现有部署的 8 位口令保持可用（不强制迁移，避免用户重配所有平板）。"""
+    return secrets.token_hex(8).upper()
+
+
 def ensure_data():
     os.makedirs(DATA_DIR, exist_ok=True)
     if not os.path.exists(TOKEN_FILE):
-        # 16 位 hex（64bit）；老版本是 8 位，如需升级强度删除该文件重启即可
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-            f.write(secrets.token_hex(8).upper())
+            f.write(new_global_token())
     if not os.path.exists(USERS_FILE):
         # 初始用户：admin 的口令绑定为当前设备口令
         u = hash_password(read_token())
@@ -152,7 +161,7 @@ def read_token():
     with open(TOKEN_FILE, "r", encoding="utf-8") as f:
         tok = f.read().strip()
     if not tok:   # 文件被清空时重新生成，避免空口令登入
-        tok = secrets.token_hex(8).upper()
+        tok = new_global_token()
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             f.write(tok)
         sys.stderr.write("[warn] 检测到空口令，已重新生成: %s\n" % tok)
@@ -179,6 +188,48 @@ def verify_password(user, password):
         return False
 
 
+# ---------- 令牌哈希化：兼容旧明文，验证成功即静默升级 ----------
+
+def hash_token(token):
+    """把口令/设备令牌变成可落盘的 PBKDF2 摘要（不保存明文）"""
+    return hash_password(token)
+
+
+def verify_stored_token(stored, token):
+    """
+    兼容两种落盘格式：
+      - 新格式 dict{salt,hash,iterations}：PBKDF2 校验
+      - 旧格式纯字符串：明文比对，调用方负责升级为新格式
+    """
+    if not token or stored is None:
+        return False
+    if isinstance(stored, dict) and "hash" in stored:
+        return verify_password(stored, token)
+    return hmac.compare_digest(str(stored), str(token))
+
+
+def session_key(sid):
+    """会话 id 只存摘要：文件泄露也无法反推出可用的 X-Session"""
+    return hashlib.sha256(sid.encode("utf-8")).hexdigest()
+
+
+def load_sessions():
+    d = load_json(SESSIONS_FILE, {"sessions": {}})
+    now = time.time()
+    out = {}
+    expired = 0
+    if isinstance(d, dict):
+        for sid, s in (d.get("sessions") or {}).items():
+            if isinstance(s, dict) and now - float(s.get("ts", 0)) < SESSION_TTL:
+                out[sid] = s
+            else:
+                expired += 1
+    # 顺手清理过期会话：过期条目不再有利用价值，留着只是信息泄露面
+    if expired:
+        atomic_write(SESSIONS_FILE, json.dumps({"sessions": out}))
+    return out
+
+
 def load_users():
     d = load_json(USERS_FILE, {"users": []})
     return d if isinstance(d, dict) and isinstance(d.get("users"), list) else {"users": []}
@@ -188,26 +239,39 @@ def save_users(users):
     atomic_write(USERS_FILE, json.dumps(users, ensure_ascii=False, indent=2))
 
 
-def load_sessions():
-    d = load_json(SESSIONS_FILE, {"sessions": {}})
-    now = time.time()
-    out = {}
-    if isinstance(d, dict):
-        for sid, s in (d.get("sessions") or {}).items():
-            if isinstance(s, dict) and now - float(s.get("ts", 0)) < SESSION_TTL:
-                out[sid] = s
-    return out
-
-
 def save_sessions(sessions):
     atomic_write(SESSIONS_FILE, json.dumps({"sessions": sessions}))
+
+
+def get_session(sid):
+    """
+    按 sid 取会话。新格式 key 是 sha256(sid)，旧格式 key 是明文 sid。
+    命中旧格式时顺手升级（迁移在锁外做，避免影响读路径）。
+    """
+    if not sid:
+        return None
+    sessions = load_sessions()
+    s = sessions.get(session_key(sid))
+    if s is not None:
+        return s
+    s = sessions.get(sid)
+    if s is not None:
+        # 旧明文会话升级为摘要 key
+        with _SAVE_LOCK:
+            cur = load_sessions()
+            if sid in cur and session_key(sid) not in cur:
+                cur[session_key(sid)] = cur.pop(sid)
+                save_sessions(cur)
+        return s
+    return None
 
 
 def create_session(username, role):
     with _SAVE_LOCK:
         sessions = load_sessions()
         sid = secrets.token_hex(32)
-        sessions[sid] = {"user": username, "role": role, "ts": time.time()}
+        # 256bit 随机 sid 本身不可逆；落盘只存摘要，泄露文件无法冒用
+        sessions[session_key(sid)] = {"user": username, "role": role, "ts": time.time()}
         save_sessions(sessions)
     return sid
 
@@ -215,7 +279,11 @@ def create_session(username, role):
 def drop_session(sid):
     with _SAVE_LOCK:
         sessions = load_sessions()
-        if sid in sessions:
+        key = session_key(sid) if sid else ""
+        if key in sessions:
+            del sessions[key]
+            save_sessions(sessions)
+        elif sid in sessions:  # 兼容旧明文 key
             del sessions[sid]
             save_sessions(sessions)
 
@@ -247,20 +315,45 @@ def device_by_id(devid):
 
 
 def device_by_token(tok):
-    for d in load_devices()["devices"]:
-        if hmac.compare_digest(str(d.get("token", "")), tok):
+    """按令牌找设备。兼容旧明文与新哈希，命中旧明文时静默升级为哈希落盘。"""
+    if not tok:
+        return None
+    data = load_devices()
+    if not data:
+        return None
+    for d in data["devices"]:
+        stored = d.get("token_hash") if "token_hash" in d else d.get("token")
+        if verify_stored_token(stored, tok):
+            if "token_hash" not in d:
+                # 旧明文 → 哈希；哈希用同一令牌，分组关系不变
+                with _SAVE_LOCK:
+                    cur = load_devices()
+                    # 凡是用这个明文令牌的设备一次性全部升级：只升命中那台会让
+                    # 同口令组里一半用 group_key、一半用明文 token，分组断裂。
+                    for x in cur["devices"]:
+                        if "token_hash" not in x and verify_stored_token(x.get("token"), tok):
+                            x["token_hash"] = hash_token(tok)
+                            x["group_key"] = group_key_for(tok)  # 同令牌 → 同组键
+                            x.pop("token", None)
+                    save_devices(cur)
             return d
     # 兼容：旧全局口令视为默认设备
     try:
         if hmac.compare_digest(read_token(), tok):
-            return {"id": "default", "name": "默认平板", "token": tok}
+            return {"id": "default", "name": "默认平板", "token_hash": hash_token(tok)}
     except Exception:
         pass
     return None
 
 
+def save_devices(data):
+    atomic_write(DEVICES_FILE, json.dumps(data, ensure_ascii=False, indent=2))
+
+
 def device_token(dev_id):
-    for d in load_devices()["devices"]:
+    """取令牌明文——仅在添加设备时用于展示一次；哈希化后无法反推，返回空。
+    保留此函数签名以兼容调用方。"""
+    for d in (load_devices() or {}).get("devices", []):
         if d.get("id") == dev_id:
             return str(d.get("token", "") or "")
     return ""
@@ -268,13 +361,33 @@ def device_token(dev_id):
 
 def token_group(dev_id):
     """同一口令的所有设备（口令即设备组）：一次推送，全组生效。
-    场景：多个平板填了同一个设备口令，希望改一份配置/待办全都同步。"""
-    tok = device_token(dev_id)
-    if not tok:
+    哈希化后用令牌的确定性摘要分组：同令牌 → 同摘要 → 同组。
+    旧明文设备仍用明文分组，两种格式互不干扰。"""
+    data = load_devices()
+    if not data:
         return [dev_id]
-    ids = [d.get("id") for d in load_devices()["devices"]
-           if str(d.get("token", "") or "") == tok]
+    me = next((d for d in data["devices"] if d.get("id") == dev_id), None)
+    if me is None:
+        return [dev_id]
+    if "token_hash" in me:
+        # 新格式：token_hash 用 PBKDF2+随机盐，同令牌摘要不同，不能直接比。
+        # 用确定性摘要 sha256(normalize) 作为组键，存在 group_key 字段。
+        gk = me.get("group_key", "")
+        if not gk:
+            return [dev_id]
+        ids = [d.get("id") for d in data["devices"] if d.get("group_key", "") == gk]
+    else:
+        tok = str(me.get("token", "") or "")
+        if not tok:
+            return [dev_id]
+        ids = [d.get("id") for d in data["devices"]
+               if str(d.get("token", "") or "") == tok]
     return ids if dev_id in ids else ids + [dev_id]
+
+
+def group_key_for(token):
+    """令牌的确定性摘要，仅用于同口令设备分组（非鉴权用途）"""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def todos_path(dev_id):
@@ -1184,7 +1297,7 @@ class Handler(SimpleHTTPRequestHandler):
             return None
         sid = self.headers.get("X-Session", "")
         if sid:
-            s = load_sessions().get(sid)
+            s = get_session(sid)
             if s:
                 return {"mode": "session", "role": s.get("role", "user"),
                         "user": s.get("user", ""), "sid": sid}
@@ -1375,15 +1488,19 @@ class Handler(SimpleHTTPRequestHandler):
                     return self._send_json({"ok": True,
                                             "devices": [{"id": d["id"], "name": d.get("name", "")}
                                                         for d in mine]})
+                # 令牌哈希化后无法回显明文：新格式只回 has_token，旧明文设备
+                # 继续兼容回显（升级后自然消失）。明文仅在添加设备时返回一次。
+                def dev_view(d):
+                    v = {"id": d["id"], "name": d.get("name", ""),
+                         "has_token": bool(d.get("token_hash") or d.get("token"))}
+                    if "token" in d:   # 旧格式兼容
+                        v["token"] = d.get("token", "")
+                    return v
                 if a.get("mode") == "device":
                     # 设备口令只看得到自己这台：多设备部署时口令互不可见
                     mine = [d for d in devs if d["id"] == a.get("dev")]
-                    return self._send_json({"ok": True,
-                                            "devices": [{"id": d["id"], "name": d.get("name", ""),
-                                                         "token": d.get("token", "")} for d in mine]})
-                return self._send_json({"ok": True,
-                                        "devices": [{"id": d["id"], "name": d.get("name", ""),
-                                                     "token": d.get("token", "")} for d in devs]})
+                    return self._send_json({"ok": True, "devices": [dev_view(d) for d in mine]})
+                return self._send_json({"ok": True, "devices": [dev_view(d) for d in devs]})
             # 以下为设备级接口
             if p not in ("/api/ping", "/api/holidays"):
                 dev = self._resolve_dev(a)
@@ -1583,8 +1700,10 @@ class Handler(SimpleHTTPRequestHandler):
             devid = "d" + secrets.token_hex(4)
             while any(d.get("id") == devid for d in devices):
                 devid = "d" + secrets.token_hex(4)
-            token = secrets.token_hex(16).upper()
-            devices.append({"id": devid, "name": name, "token": token})
+            token = secrets.token_hex(16).upper()   # 32 位 hex = 128bit，仅此刻展示一次
+            devices.append({"id": devid, "name": name,
+                            "token_hash": hash_token(token),
+                            "group_key": group_key_for(token)})
             atomic_write(todos_path(devid), json.dumps(
                 {"version": 1, "rev": 0, "todos": []}, ensure_ascii=False, indent=2))
             atomic_write(config_path(devid), json.dumps(
