@@ -71,7 +71,14 @@ WATCH_CONFIG_FILE = os.path.join(DATA_DIR, "watchdog-config.json")
 WATCH_STATE_FILE = os.path.join(DATA_DIR, "watchdog-state.json")
 
 SESSION_TTL = 30 * 86400   # 网页登录会话有效期 30 天
-_LOGIN_FAIL = {"count": 0, "until": 0.0}   # 登录失败全局退避：并行爆破也被拖慢
+# 登录失败限流：按「账号」和「来源 IP」两个维度分别计数，互不影响。
+# 旧版是全局单计数器——任何人输错 5 次就能把全体用户锁在外面（DoS）。
+LOGIN_MAX_ACCOUNT = 5      # 同一账号连续失败达此值 -> 锁定该账号
+LOGIN_MAX_IP = 20          # 同一 IP 连续失败达此值 -> 锁定该 IP
+LOGIN_LOCK_SECONDS = 60    # 锁定时长
+LOGIN_FAIL_TTL = 3600      # 计数条目保留时长，超时清理避免内存无限增长
+_login_fails = {"account": {}, "ip": {}}   # key -> [失败次数, 计数起始时间, 锁定截止]
+_LOGIN_LOCK = threading.Lock()             # 独立锁，避免与 _SAVE_LOCK 的磁盘写互相阻塞
 _PBKDF2_ITER = 600000      # 口令哈希迭代次数（旧哈希自带 iterations 字段，验证时按各自迭代数走，平滑升级）
 _TOKEN_FILE_FMT = "token_hash_v1"
 _SERVER_START = time.time()  # 用于避免服务刚重启、平板还没首次上报时的误报
@@ -186,6 +193,54 @@ def verify_password(user, password):
         return hmac.compare_digest(h.hex(), user.get("hash", ""))
     except Exception:
         return False
+
+
+# ---------- 登录失败限流（账号 + IP 双维度） ----------
+
+def _login_prune(bucket, now):
+    """清掉已过期的计数条目，避免被大量随机用户名撑爆内存"""
+    for k in [k for k, v in bucket.items()
+              if now - v[1] > LOGIN_FAIL_TTL and v[2] <= now]:
+        bucket.pop(k, None)
+
+
+def login_locked(username, ip):
+    """返回被锁的维度名（account/ip），未锁返回 None。账号名也进 IP 维度兜底。"""
+    now = time.time()
+    with _LOGIN_LOCK:
+        _login_prune(_login_fails["account"], now)
+        _login_prune(_login_fails["ip"], now)
+        for name, key in (("account", username), ("ip", ip)):
+            v = _login_fails[name].get(key)
+            if v and v[2] > now:
+                return name
+    return None
+
+
+def login_failed(username, ip):
+    """记一次失败；返回本次是否触发了新锁定"""
+    now = time.time()
+    triggered = False
+    with _LOGIN_LOCK:
+        for name, key, limit in (("account", username, LOGIN_MAX_ACCOUNT),
+                                 ("ip", ip, LOGIN_MAX_IP)):
+            v = _login_fails[name].get(key)
+            if not v or now - v[1] > LOGIN_FAIL_TTL:
+                v = [0, now, 0.0]
+                _login_fails[name][key] = v
+            v[0] += 1
+            if v[0] >= limit and v[2] <= now:
+                v[2] = now + LOGIN_LOCK_SECONDS
+                triggered = True
+            if v[2] > now:
+                v[0] = 0   # 锁定期间停止累加，解锁后从零开始
+    return triggered
+
+
+def login_success(username, ip):
+    """登录成功：只清账号维度（IP 维度保留，防止用正确口令暴力试其他账号）"""
+    with _LOGIN_LOCK:
+        _login_fails["account"].pop(username, None)
 
 
 # ---------- 令牌哈希化：兼容旧明文，验证成功即静默升级 ----------
@@ -1322,22 +1377,24 @@ class Handler(SimpleHTTPRequestHandler):
         return None
 
     def _handle_login(self, doc):
-        if _LOGIN_FAIL["until"] > time.time():
-            return self._send_json({"error": "尝试过于频繁，请稍后再试"}, 429)
         username = str(doc.get("username", "")).strip()
         password = str(doc.get("password", ""))
+        ip = self.client_address[0] if self.client_address else ""
+        # 限流在校验口令之前判断：被锁的账号/IP 直接拒绝，不做昂贵的 PBKDF2
+        locked = login_locked(username, ip)
+        if locked == "account":
+            return self._send_json({"error": "该账号尝试过于频繁，请稍后再试"}, 429)
+        if locked == "ip":
+            return self._send_json({"error": "来源 IP 尝试过于频繁，请稍后再试"}, 429)
         u = None
         for x in load_users()["users"]:
             if x.get("username") == username:
                 u = x
                 break
         if u is None or not verify_password(u, password):
-            _LOGIN_FAIL["count"] += 1
-            time.sleep(random.uniform(0.3, 0.8))
-            if _LOGIN_FAIL["count"] >= 5:
-                _LOGIN_FAIL["until"] = time.time() + 60
+            login_failed(username, ip)   # 不再 sleep 占住请求线程
             return self._send_json({"error": "用户名或口令错误"}, 401)
-        _LOGIN_FAIL["count"] = 0
+        login_success(username, ip)
         role = u.get("role", "user")
         sid = create_session(username, role)
         return self._send_json({"ok": True, "session": sid,
