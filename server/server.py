@@ -8,6 +8,7 @@
   POST /api/logout   退出登录
   GET  /api/users    用户列表（仅管理员）
   POST /api/users    用户管理：add/passwd/del（仅管理员）
+  GET  /api/health   匿名健康检查（监控探活，无需鉴权）
   GET  /api/ping     连通性测试（需口令/会话）
   GET  /api/todos    读取待办规则（需口令/会话）
   POST /api/todos    保存待办规则（需口令/会话）
@@ -1695,6 +1696,9 @@ class Handler(SimpleHTTPRequestHandler):
     # ---------- 路由 ----------
     def do_GET(self):
         p = urlparse(self.path).path
+        # 匿名健康检查：供监控/负载均衡探活，不暴露任何敏感信息
+        if p == "/api/health":
+            return self._send_json({"ok": True, "service": "clockdash", "ts": int(time.time())})
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
                  "/api/holidays", "/api/check", "/api/users", "/api/devices",
                  "/api/history", "/api/watchdog", "/api/backup"):
@@ -2016,6 +2020,17 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         # 设置页更新后手机端立即生效，避免缓存旧页面
         self.send_header("Cache-Control", "no-store")
+        # 安全响应头：全链路 HTTP 无法用 HSTS，但以下头不影响老客户端
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "SAMEORIGIN")
+        self.send_header("Referrer-Policy", "no-referrer")
+        # 前端用内联脚本，且看板/后台会直连 Open-Meteo 与高德做天气/城市搜索，
+        # connect-src 必须放行这两个域，否则 CSP 会把功能拦掉（实测风险点）。
+        self.send_header("Content-Security-Policy",
+                         "default-src 'self' 'unsafe-inline' data:; "
+                         "img-src 'self' data: https:; "
+                         "connect-src 'self' https://api.open-meteo.com "
+                         "https://geocoding-api.open-meteo.com https://restapi.amap.com")
         SimpleHTTPRequestHandler.end_headers(self)
 
     def log_message(self, fmt, *args):
