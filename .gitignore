@@ -14,6 +14,8 @@ server/data/
 
 # --- 工具与临时文件 ---
 *.log
+server/server-log.txt
+server/_*.json
 *.tmp
 *.class
 __pycache__/
