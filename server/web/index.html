@@ -643,7 +643,9 @@
       ? auth.user + (auth.role === "admin" ? " · 管理员" : " · 用户")
       : "设备口令模式";
     $("btnLogout").hidden = false;
-    $("secUsers").hidden = auth.role !== "admin";
+    // 用户管理需要真正的管理员会话；设备口令模式虽然 role=admin，
+    // 但服务端对用户/设备/备份接口一律 403，显示出来只会点不动还报错
+    $("secUsers").hidden = !(auth.mode === "session" && auth.role === "admin");
     $("secDev").hidden = auth.mode !== "session"; // 设备口令模式本身绑定一台设备
     // 在线看护面板仅管理员登录后台时可见；设备口令页面是给平板扫码配置用的
     var showWatch = auth.mode === "session" && auth.role === "admin";
@@ -664,7 +666,7 @@
     } else {
       loadData();
     }
-    if (auth.role === "admin") renderUsers();
+    if (auth.mode === "session" && auth.role === "admin") renderUsers();
   }
   function showLogin() {
     $("noauth").hidden = false; $("app").hidden = true;
