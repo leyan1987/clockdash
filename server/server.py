@@ -235,9 +235,21 @@ def hash_password(password, salt=None):
 def verify_password(user, password):
     try:
         salt = bytes.fromhex(user.get("salt", ""))
-        h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"),
-                                salt, int(user.get("iterations", _PBKDF2_ITER)))
-        return hmac.compare_digest(h.hex(), user.get("hash", ""))
+        iters = int(user.get("iterations", _PBKDF2_ITER))
+        h = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iters)
+        if not hmac.compare_digest(h.hex(), user.get("hash", "")):
+            return False
+        # PBKDF2 迭代迁移：旧账号（如 10 万次）验证成功后，静默重哈希到新强度。
+        # 只在口令正确时升级，不触碰错误尝试；old iterations 兼容历史数据。
+        if iters < _PBKDF2_ITER and user.get("username"):
+            with _SAVE_LOCK:
+                us = load_users()
+                for u in us["users"]:
+                    if u.get("username") == user["username"] and int(u.get("iterations", 0)) < _PBKDF2_ITER:
+                        u.update(hash_password(password, salt=bytes.fromhex(u["salt"]).hex()))
+                        save_users(us)
+                        break
+        return True
     except Exception:
         return False
 
@@ -472,10 +484,20 @@ def load_devices():
     return None
 
 
+def all_devices():
+    """安全读取设备列表：文件损坏/空列表时返回 []，调用方不会再 KeyError 500。
+    注意 load_devices() 的 None 语义被 ensure_data 用来判断是否首次初始化，
+    不能改它，故另设此函数专供读取场景。"""
+    d = load_json(DEVICES_FILE, None)
+    if isinstance(d, dict) and isinstance(d.get("devices"), list):
+        return [x for x in d["devices"] if isinstance(x, dict) and x.get("id")]
+    return []
+
+
 def device_by_id(devid):
     if not isinstance(devid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", devid):
         return None
-    for d in load_devices()["devices"]:
+    for d in all_devices():
         if d.get("id") == devid:
             return d
     return None
@@ -748,7 +770,7 @@ def watchdog_tick():
     with _SAVE_LOCK:
         s = load_watch_state()
         changed = False
-        for d in load_devices()["devices"]:
+        for d in all_devices():
             dev_id = d.get("id")
             name = d.get("name") or dev_id
             last = float(s["devices"].get(dev_id, {}).get("last_seen", 0) or 0)
@@ -816,7 +838,7 @@ def watchdog_status():
     now = time.time()
     s = load_watch_state()
     out = []
-    for d in load_devices()["devices"]:
+    for d in all_devices():
         dev_id = d.get("id")
         info = s["devices"].get(dev_id, {})
         al = s["alerts"].get(dev_id, {})
@@ -1790,7 +1812,7 @@ class Handler(SimpleHTTPRequestHandler):
                                                    "config_key": u.get("config_key", "")}
                                                   for u in load_users()["users"]]})
             if p == "/api/devices":
-                devs = load_devices()["devices"]
+                devs = all_devices()
                 if a.get("role") != "admin":
                     # 普通用户只能看到自己绑定的那一台设备（不含口令）
                     me = next((u for u in load_users()["users"]
@@ -2021,7 +2043,8 @@ class Handler(SimpleHTTPRequestHandler):
 
     def _handle_devices(self, doc):
         act = str(doc.get("action", ""))
-        devices = load_devices()["devices"]
+        _dl = load_devices()
+        devices = _dl["devices"] if _dl else []
         if act == "add":
             name = str(doc.get("name", "")).strip()[:32] or "未命名平板"
             devid = "d" + secrets.token_hex(4)
@@ -2110,11 +2133,48 @@ class Handler(SimpleHTTPRequestHandler):
                             urlparse(self.path).path, code))
 
 
+class ClockDashHTTPServer(ThreadingHTTPServer):
+    """带线程上限与超时的 HTTP 服务器：防 Slowloris 慢连接打满线程。"""
+    daemon_threads = True
+    request_queue_size = 64          # 待处理连接队列上限
+
+    def get_request(self):
+        sock, addr = ThreadingHTTPServer.get_request(self)
+        sock.settimeout(15)           # 单连接读写超时，慢连接会被自动回收
+        return sock, addr
+
+    def process_request(self, request, client_address):
+        # 非阻塞获取名额：满了直接关闭连接，不 spawn 新线程。
+        # 若用阻塞信号量，等待中的线程本身也会堆积，等于没限。
+        if not _REQ_SEM.acquire(blocking=False):
+            try:
+                request.close()
+            except Exception:
+                pass
+            return
+        def run():
+            try:
+                self.process_request_thread(request, client_address)
+            finally:
+                _REQ_SEM.release()
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+
+_REQ_SEM = threading.BoundedSemaphore(64)   # 最多 64 个并发请求线程
+
+
 def main():
     ensure_data()
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     token = read_token()
-    srv = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    try:
+        srv = ClockDashHTTPServer(("0.0.0.0", port), Handler)
+    except OSError as e:
+        # 端口被占时给出明确提示，避免 systemd Restart=always 静默循环
+        sys.stderr.write("启动失败：端口 %d 无法绑定（%s）。"
+                         "若端口被占用，请停止占用进程或修改端口后重试。\n" % (port, e))
+        sys.exit(1)
     # 在线看护：独立线程，不占用 HTTP 请求线程；daemon 随主进程退出
     threading.Thread(target=watchdog_loop, name="clockdash-watchdog",
                      daemon=True).start()

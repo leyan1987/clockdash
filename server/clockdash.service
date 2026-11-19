@@ -7,6 +7,17 @@ WorkingDirectory=/home/server
 ExecStart=/usr/bin/python3 /home/server/server.py 8765
 Restart=always
 RestartSec=5
+# 安全加固：不指定 User（避免 data/backups 属主不匹配导致启动失败），
+# 以下选项不依赖具体用户，可安全启用。
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+PrivateTmp=true
+# 仅放行需要写入的两个目录
+ReadWritePaths=/home/server/data /home/server/backups
 
 [Install]
 WantedBy=multi-user.target
