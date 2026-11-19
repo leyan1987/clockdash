@@ -1438,8 +1438,12 @@ class Handler(SimpleHTTPRequestHandler):
         a = self._auth()
         if p not in ("/api/login", "/api/logout") and a is None:
             return self._send_json({"error": "未登录"}, 401)
-        if p in ("/api/users", "/api/watchdog", "/api/watchdog/test") and a.get("mode") == "device":
-            return self._send_json({"error": "设备口令无权访问，请使用管理员账号登录"}, 403)
+        # 设备/用户/看护均属管理面：设备口令和普通用户会话都不得访问。
+        # 实测漏洞：设备令牌 role 恒为 admin，若只拦 users/watchdog，
+        # 任何平板拿自己的口令就能增删/删除其他设备（已复现）。
+        if p in ("/api/users", "/api/devices", "/api/watchdog", "/api/watchdog/test") \
+                and (a.get("mode") == "device" or a.get("role") != "admin"):
+            return self._send_json({"error": "仅管理员账号可访问该接口"}, 403)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
             if n > 1024 * 1024:
