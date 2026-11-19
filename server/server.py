@@ -113,14 +113,23 @@ def ensure_data():
     if not os.path.exists(USERS_FILE):
         # 初始用户：admin 的口令绑定为当前设备口令
         u = hash_password(read_token())
-        save_users({"users": [{"username": "admin", "role": "admin", **u}]})
+        save_users({"users": [{"username": "admin", "role": "admin", **u,
+                               "config_key": account_config_key("admin"),
+                               "expires": ""}]})
     else:
         # 迁移：普通用户补设备绑定字段（历史数据统一绑到默认设备）
+        # 以及订阅字段 config_key / expires（旧账号默认永不过期，避免升级即停服）
         us = load_users()
         changed = False
         for u in us["users"]:
             if u.get("role") == "user" and not u.get("device"):
                 u["device"] = "default"
+                changed = True
+            if not u.get("config_key"):
+                u["config_key"] = account_config_key(u["username"])
+                changed = True
+            if "expires" not in u:
+                u["expires"] = ""   # 空 = 永不过期
                 changed = True
         if changed:
             save_users(us)
@@ -303,6 +312,46 @@ def load_users():
 
 def save_users(users):
     atomic_write(USERS_FILE, json.dumps(users, ensure_ascii=False, indent=2))
+
+
+# ---------- 订阅制账号：一个账号 = 一套配置 + 任意多台设备 ----------
+
+def account_config_key(username):
+    """账号固定的配置隔离键。所有设备解析到这个 devid，天然共享同一份
+    todos/config/rev/看护状态——无需改任何 path() 调用。"""
+    return "u_" + hashlib.sha256(username.encode("utf-8")).hexdigest()[:10]
+
+
+def account_expired(user):
+    """账号是否过期。expires 为空/缺失/非法 => 永不过期（兼容旧账号与内置 admin）。
+    格式 YYYY-MM-DD，到期当天仍可用，次日失效。"""
+    if user.get("role") == "admin":
+        return False   # 内置管理员不受订阅约束（是卖家自己）
+    exp = str(user.get("expires", "") or "").strip()
+    if not exp:
+        return False
+    try:
+        return datetime.strptime(exp, "%Y-%m-%d").date() < datetime.now().date()
+    except ValueError:
+        return False
+
+
+def account_by_password(tok):
+    """把平板填的账号口令解析为账号，返回 (user, config_key)。
+    与网页登录共用同一口令——平板填的就是购买账号时拿到的那个口令。"""
+    if not tok:
+        return None, None
+    for u in load_users()["users"]:
+        # 平板填的可能是「用户名:口令」或纯口令。纯口令时逐个比对（账号数很少）。
+        cand = tok
+        if ":" in tok:
+            un, pw = tok.split(":", 1)
+            if un != u.get("username"):
+                continue
+            cand = pw
+        if verify_password(u, cand):
+            return u, u.get("config_key") or account_config_key(u["username"])
+    return None, None
 
 
 def save_sessions(sessions):
@@ -1359,12 +1408,28 @@ class Handler(SimpleHTTPRequestHandler):
                                  self.client_address[0] if self.client_address else "")
                 return {"mode": "device", "role": "admin",
                         "user": dev.get("name", "平板"), "dev": dev["id"]}
+            # 订阅制：平板填的是账号口令，解析到该账号的固定 config_key。
+            # 同账号 N 台设备全部落到同一个 devid，天然共享同一套配置。
+            user, cfgkey = account_by_password(tok)
+            if user:
+                if account_expired(user):
+                    return {"mode": "expired", "user": user["username"]}
+                if self.headers.get("X-Client", "") != "web":
+                    touch_device(cfgkey, urlparse(self.path).path,
+                                 self.client_address[0] if self.client_address else "")
+                return {"mode": "device", "role": "admin",
+                        "user": user["username"], "dev": cfgkey,
+                        "account": user["username"]}
             time.sleep(random.uniform(0.2, 0.5))
             return None
         sid = self.headers.get("X-Session", "")
         if sid:
             s = get_session(sid)
             if s:
+                u = next((x for x in load_users()["users"]
+                          if x.get("username") == s.get("user")), None)
+                if u and account_expired(u):
+                    return {"mode": "expired", "user": s.get("user", "")}
                 return {"mode": "session", "role": s.get("role", "user"),
                         "user": s.get("user", ""), "sid": sid}
             time.sleep(random.uniform(0.2, 0.4))
@@ -1379,7 +1444,9 @@ class Handler(SimpleHTTPRequestHandler):
         if a.get("role") == "user":
             for u in load_users()["users"]:
                 if u.get("username") == a.get("user"):
-                    return u.get("device") or "default"
+                    # 订阅制账号：优先用 config_key（同账号多设备共享一份配置）；
+                    # 旧账号没有该字段时退回 device 绑定，平滑兼容
+                    return u.get("config_key") or u.get("device") or "default"
             return None
         qs = parse_qs(urlparse(self.path).query)
         devid = (qs.get("devid") or [""])[0]
@@ -1405,6 +1472,9 @@ class Handler(SimpleHTTPRequestHandler):
         if u is None or not verify_password(u, password):
             login_failed(username, ip)   # 不再 sleep 占住请求线程
             return self._send_json({"error": "用户名或口令错误"}, 401)
+        if account_expired(u):
+            return self._send_json({"error": "订阅已到期，请联系服务商续费",
+                                    "code": "SUBSCRIPTION_EXPIRED"}, 402)
         login_success(username, ip)
         role = u.get("role", "user")
         sid = create_session(username, role)
@@ -1418,7 +1488,11 @@ class Handler(SimpleHTTPRequestHandler):
         if act == "list":
             return self._send_json({"ok": True,
                                     "users": [{"username": u.get("username"),
-                                               "role": u.get("role", "user")}
+                                               "role": u.get("role", "user"),
+                                               "expires": u.get("expires", ""),
+                                               "expired": account_expired(u),
+                                               "config_key": u.get("config_key", ""),
+                                               "device": u.get("device", "")}
                                               for u in load_users()["users"]]})
         if not re.fullmatch(r"[A-Za-z0-9_]{2,32}", username):
             return self._send_json({"error": "用户名需为 2-32 位字母数字下划线"}, 400)
@@ -1432,14 +1506,54 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json({"error": "口令至少 6 位"}, 400)
             role = doc.get("role") if doc.get("role") in ("admin", "user") else "user"
             u = hash_password(password)
-            entry = {"username": username, "role": role, **u}
+            exp = str(doc.get("expires", "") or "").strip()
+            if exp:
+                try:
+                    datetime.strptime(exp, "%Y-%m-%d")
+                except ValueError:
+                    return self._send_json({"error": "到期日期格式应为 YYYY-MM-DD"}, 400)
+            entry = {"username": username, "role": role, **u,
+                     "config_key": account_config_key(username), "expires": exp}
             if role == "user":
-                # 普通用户必须绑定一台设备，登录后只能管理这一台
-                devid = str(doc.get("device", "")).strip()
-                if device_by_id(devid) is None:
-                    return self._send_json({"error": "请为该用户选择要绑定的设备"}, 400)
-                entry["device"] = devid
+                # 订阅制：账号口令即设备凭据，不再要求绑定某一台设备。
+                # 旧字段 device 留空；_resolve_dev 会按 config_key 解析。
+                devid = str(doc.get("device", "") or "").strip()
+                if devid:
+                    entry["device"] = devid
             users["users"].append(entry)
+        elif act == "renew":
+            # 续费：设置新的到期日期。支持 YYYY-MM-DD 或按月/年增量（months=12）。
+            if idx < 0:
+                return self._send_json({"error": "用户不存在"}, 404)
+            exp = str(doc.get("expires", "") or "").strip()
+            if not exp:
+                try:
+                    months = int(doc.get("months", 0))
+                except (TypeError, ValueError):
+                    months = 0
+                if months <= 0:
+                    return self._send_json({"error": "请提供到期日期或续费月数"}, 400)
+                base = datetime.now().date()
+                if account_expired(users["users"][idx]):
+                    base = datetime.now().date()
+                # 从原到期日续，未到期则叠加；过期则从今天起算
+                old = str(users["users"][idx].get("expires", "") or "")
+                try:
+                    od = datetime.strptime(old, "%Y-%m-%d").date()
+                    base = od if od >= datetime.now().date() else datetime.now().date()
+                except ValueError:
+                    pass
+                m = base.month - 1 + months
+                y = base.year + m // 12
+                mo = m % 12 + 1
+                import calendar
+                d = min(base.day, calendar.monthrange(y, mo)[1])
+                exp = datetime(y, mo, d).strftime("%Y-%m-%d")
+            try:
+                datetime.strptime(exp, "%Y-%m-%d")
+            except ValueError:
+                return self._send_json({"error": "到期日期格式应为 YYYY-MM-DD"}, 400)
+            users["users"][idx]["expires"] = exp
         elif act == "passwd":
             if idx < 0:
                 return self._send_json({"error": "用户不存在"}, 404)
@@ -1585,6 +1699,9 @@ class Handler(SimpleHTTPRequestHandler):
                  "/api/holidays", "/api/check", "/api/users", "/api/devices",
                  "/api/history", "/api/watchdog", "/api/backup"):
             a = self._auth()
+            if a and a.get("mode") == "expired":
+                return self._send_json({"error": "SUBSCRIPTION_EXPIRED",
+                                        "hint": "订阅已到期，请续费后恢复同步"}, 402)
             if a is None:
                 return self._send_json({"error": "未登录"}, 401)
             if p == "/api/watchdog":
@@ -1601,7 +1718,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json({"ok": True,
                                         "users": [{"username": u.get("username"),
                                                    "role": u.get("role", "user"),
-                                                   "device": u.get("device", "")}
+                                                   "device": u.get("device", ""),
+                                                   "expires": u.get("expires", ""),
+                                                   "expired": account_expired(u),
+                                                   "config_key": u.get("config_key", "")}
                                                   for u in load_users()["users"]]})
             if p == "/api/devices":
                 devs = load_devices()["devices"]
@@ -1684,6 +1804,9 @@ class Handler(SimpleHTTPRequestHandler):
                      "/api/watchdog/test", "/api/message", "/api/backup"):
             return self.send_error(404)
         a = self._auth()
+        if a and a.get("mode") == "expired":
+            return self._send_json({"error": "SUBSCRIPTION_EXPIRED",
+                                    "hint": "订阅已到期，请续费后恢复同步"}, 402)
         if p not in ("/api/login", "/api/logout") and a is None:
             return self._send_json({"error": "未登录"}, 401)
         # 设备/用户/看护均属管理面：设备口令和普通用户会话都不得访问。
