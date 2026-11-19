@@ -122,6 +122,40 @@ adb install -r dist/ClockDash-v1.0.apk
 
 网页后台顶部「设备」区块 → **＋ 添加设备** → 得到该设备专属口令 → 在那台平板上用此口令配置。每台设备待办/天气/夜间模式完全独立，顶部下拉随时切换管理。
 
+## 备份与恢复
+
+`server/backup.py`（纯标准库，无依赖）负责整目录打包 `data/`——包含口令、用户库、
+设备令牌哈希、待办、配置与看护状态。备份文件权限 0600，内含凭据，请妥善保管。
+
+```bash
+# 手动备份（默认保留最近 30 份，pre-restore-* 永不自动清理）
+python3 backup.py create --data ./data --out ./backups
+
+# 查看备份
+python3 backup.py list --out ./backups
+
+# 恢复（先校验，再替换；恢复前会自动把当前数据另存一份）
+python3 backup.py restore backups/clockdash-YYYYMMDD-HHMMSS-XXX.tar.gz \
+  --data ./data --out ./backups --dry-run      # 先只校验
+python3 backup.py restore backups/clockdash-YYYYMMDD-HHMMSS-XXX.tar.gz \
+  --data ./data --out ./backups --force        # 确认覆盖
+```
+
+恢复前会校验 manifest 里每个文件的 SHA256，并拒绝绝对路径 / `..` 穿越 / 非普通文件，
+校验通过后才逐文件替换，不会写一半。目标目录已有同名文件时必须加 `--force`。
+
+**定时备份**：把 `clockdash-backup.service` 和 `clockdash-backup.timer` 放到
+`/etc/systemd/system/`，改好路径后：
+
+```bash
+systemctl daemon-reload
+systemctl enable --now clockdash-backup.timer
+systemctl list-timers clockdash-backup.timer
+```
+
+默认每天 03:17 备份一次（带随机延迟），保留 30 份。timer 的 `Persistent=true`
+保证停机期间错过的备份在开机后补做。
+
 ## 待办数据格式（todos.json）
 
 ```json

@@ -1,0 +1,14 @@
+[Unit]
+Description=ClockDash data backup
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/clockdash
+ExecStart=/usr/bin/python3 /opt/clockdash/backup.py create --data /opt/clockdash/data --out /opt/clockdash/backups --keep 30
+# 备份文件含凭据，限制服务进程权限
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/clockdash/backups
+PrivateTmp=true
