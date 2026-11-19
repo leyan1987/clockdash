@@ -334,14 +334,31 @@ public final class Store {
     public static JSONObject checkOnce(Context c) {
         String base = serverBase(c);
         if (base == null) return null;
-        String s = HttpUtil.get(base + "/api/check", Prefs.get(c, Prefs.K_TOKEN, ""), 8000);
+        HttpUtil.Result r = HttpUtil.getResult(base + "/api/check",
+                Prefs.get(c, Prefs.K_TOKEN, ""), 8000);
+        if (r.expired()) {
+            // 订阅到期：服务端返回 402。写标记让界面显示续费提示、停止同步；
+            // 时钟/农历/已缓存待办与提醒照常工作，不打断本地展示。
+            Prefs.putBool(c, Prefs.K_SUB_EXPIRED, true);
+            return null;
+        }
+        String s = r.body;
         if (s == null) return null;
         try {
             JSONObject o = new JSONObject(s);
-            return o.optBoolean("ok", false) ? o : null;
+            if (o.optBoolean("ok", false)) {
+                Prefs.putBool(c, Prefs.K_SUB_EXPIRED, false);  // 恢复/续费后清除
+                return o;
+            }
+            return null;
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    /** 订阅是否已到期（上次 /api/check 收到 402） */
+    public static boolean subscriptionExpired(Context c) {
+        return Prefs.getBool(c, Prefs.K_SUB_EXPIRED, false);
     }
 
     /** 判断 /api/check 响应里版本号是否有变化（resp 为 null 时返回 false） */

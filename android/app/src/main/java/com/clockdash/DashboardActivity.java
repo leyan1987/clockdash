@@ -409,7 +409,9 @@ public class DashboardActivity extends Activity {
      * 只要有一次请求在 DNS/连接阶段挂住，onResume 的同步也会跟着永远排不上队。
      */
     private void syncNow() {
-        if (mSyncing || Store.serverBase(this) == null) {
+        if (mSyncing || Store.serverBase(this) == null
+                || Store.subscriptionExpired(this)) {
+            // 订阅到期：不再请求服务器，但时钟/月历/已缓存待办与提醒照常显示
             updateStatus();
             return;
         }
@@ -552,6 +554,11 @@ public class DashboardActivity extends Activity {
         String extra = " · 列于 " + (mListBuiltAt.length() == 0 ? "--:--" : mListBuiltAt)
                 + wx + (mHeartbeatActive ? " · 闹钟停于 " + mLastAlarmText + " · 心跳接管" : "")
                 + " · v" + mVersion;
+        if (Store.subscriptionExpired(this)) {
+            tvStatus.setText("订阅已到期 · 已停止同步，请续费后重连" + extra);
+            tvStatus.setTextColor(getResources().getColor(R.color.red));
+            return;
+        }
         if (Store.serverBase(this) == null) {
             tvStatus.setText("未配置服务器：连点右上角三次进入设置" + extra);
             tvStatus.setTextColor(getResources().getColor(R.color.amber));

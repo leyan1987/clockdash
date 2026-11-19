@@ -15,6 +15,8 @@ public final class Prefs {
     /** 本机自填的高德 Web 服务 Key 与行政区码（不依赖自建服务器时直连用） */
     public static final String K_AMAP_KEY = "amap_key_local";
     public static final String K_AMAP_ADCODE = "amap_adcode_local";
+    /** 订阅到期标记：服务端返回 402 时置位，续费后清除 */
+    public static final String K_SUB_EXPIRED = "subscription_expired";
     public static final String K_NIGHT_START = "night_start";
     public static final String K_NIGHT_END = "night_end";
     public static final String K_NIGHT_ONLY = "night_only";

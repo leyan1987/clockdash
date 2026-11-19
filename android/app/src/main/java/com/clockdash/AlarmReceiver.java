@@ -95,6 +95,11 @@ public class AlarmReceiver extends BroadcastReceiver {
         acquireLock(context);
         final boolean wantTodos = AlarmScheduler.ACTION_SYNC.equals(action);
         final Context app = context.getApplicationContext();
+        // 订阅到期：停止一切服务器同步，本地时钟/提醒不受影响
+        if (Store.subscriptionExpired(app)) {
+            releaseLock();
+            return;
+        }
         new Thread(new Runnable() {
             @Override
             public void run() {

@@ -12,7 +12,11 @@
 
         <TextView style="@style/SecTitle" android:text="服务器" />
         <EditText android:id="@+id/etUrl" style="@style/Et" android:hint="例如 http://123.45.67.89:8765" />
-        <EditText android:id="@+id/etToken" style="@style/Et" android:hint="口令（服务器 data/server-token.txt）" />
+        <EditText android:id="@+id/etToken" style="@style/Et" android:hint="账号口令：账号名:口令 或只填口令" />
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
+            android:text="在线版填购买时获得的账号口令（形如 customer01:abc123），同一账号的所有平板同步同一套待办和设置。" />
         <LinearLayout style="@style/BtnRow">
             <Button android:id="@+id/btnTest" style="@style/Btn" android:text="保存并测试连接" />
             <Button android:id="@+id/btnScan" style="@style/Btn" android:text="扫二维码导入" />
