@@ -261,17 +261,21 @@
 
   <!-- ============ 用户管理（仅管理员） ============ -->
   <section id="secUsers" hidden>
-    <h2>用户管理 <small>多用户登录网页后台</small></h2>
+    <h2>订阅账号 <small>一个账号 = 一套配置，可装任意多台设备</small></h2>
     <div id="userList"></div>
-    <label>用户名（2-32 位字母数字下划线）</label><input id="nuName" placeholder="例如：father">
-    <label>口令（至少 6 位）</label><input id="nuPass" type="password" placeholder="新口令">
-    <label>绑定设备（该用户登录后只能管理这一台平板）</label><select id="nuDev"></select>
+    <label>账号名（2-32 位字母数字下划线，也是平板填的口令用户名）</label><input id="nuName" placeholder="例如：customer01">
+    <label>口令（至少 6 位；平板填这个口令即可同步）</label><input id="nuPass" type="password" placeholder="新口令">
+    <label>到期日期（YYYY-MM-DD，留空=永不过期）</label><input id="nuExp" placeholder="2027-11-19">
     <div class="btnrow">
-      <button id="btnUserAdd">＋ 添加用户</button>
+      <button class="primary" id="btnUserAdd">＋ 新建订阅账号</button>
       <button id="btnUserPass">修改口令</button>
-      <button id="btnUserDel">删除用户</button>
     </div>
-    <div class="hint">普通用户与其绑定的设备一一对应，看不到其他设备。admin 为内置管理员，不可删除。</div>
+    <div class="row" style="margin-top:8px">
+      <input id="nuRenewMonths" type="number" placeholder="续费月数，如 12" min="1">
+      <button id="btnUserRenew" style="flex:0 0 auto">续费</button>
+    </div>
+    <button id="btnUserDel" style="margin-top:8px">删除账号</button>
+    <div class="hint">客户的平板在设置页填「账号名:口令」或只填口令，即可同步这一套配置；同一账号装多少台设备内容都一样。到期后设备停止同步，续费自动恢复。输入账号名后点续费可按月延长。admin 为内置管理员，不受订阅限制、不可删除。</div>
   </section>
 
   <!-- ============ 备份与恢复（仅管理员） ============ -->
@@ -571,17 +575,6 @@
       $("devHint").textContent = isAdmin
         ? (cur ? "「" + (cur.name || cur.id) + "」的设备口令：" + cur.token + "（在平板设置里配置这台设备时用）" : "")
         : (cur ? "您绑定的设备：" + (cur.name || cur.id) + "（只能管理这一台）" : "");
-      // 用户表单的绑定设备下拉
-      var nu = $("nuDev");
-      if (nu) {
-        nu.innerHTML = "";
-        for (var n = 0; n < devList.length; n++) {
-          var o2 = document.createElement("option");
-          o2.value = devList[n].id;
-          o2.textContent = devList[n].name || devList[n].id;
-          nu.appendChild(o2);
-        }
-      }
     }).catch(function (e) { $("devHint").textContent = "设备列表加载失败：" + e.message; });
   }
   $("devSel").addEventListener("change", function () {
@@ -722,11 +715,16 @@
       var html = "";
       for (var i = 0; i < j.users.length; i++) {
         var u = j.users[i];
-        var devName = "";
-        for (var k = 0; k < devList.length; k++) if (devList[k].id === u.device) devName = devList[k].name || devList[k].id;
-        html += '<div class="todo"><div class="t-main"><div class="t-title">' + esc(u.username)
-          + (u.role === "admin" ? ' <span class="hint">管理员</span>' : ' <span class="hint">用户 · ' + esc(devName || u.device || "未绑定") + '</span>')
-          + '</div></div><div class="t-ops"><button class="mini" data-u="' + esc(u.username) + '" data-a="pass">改密</button>'
+        var status, cls;
+        if (u.role === "admin") { status = "管理员 · 不限期"; cls = "hint"; }
+        else if (u.expired) { status = "已到期 " + (u.expires || "") + " · 停同步"; cls = "err"; }
+        else if (!u.expires) { status = "永不过期"; cls = "ok"; }
+        else { status = "有效期至 " + u.expires; cls = "ok"; }
+        html += '<div class="todo"><div class="t-main">'
+          + '<div class="t-title">' + esc(u.username) + ' <span class="' + cls + '" style="font-size:12.5px">' + status + '</span></div>'
+          + '<div class="t-meta">' + (u.role === "admin" ? "内置管理员" : "配置键 " + esc(u.config_key || "")) + '</div>'
+          + '</div><div class="t-ops">'
+          + (u.role === "admin" ? "" : '<button class="mini" data-u="' + esc(u.username) + '" data-a="renew">＋1年</button>')
           + (u.username === "admin" ? "" : '<button class="mini" data-u="' + esc(u.username) + '" data-a="del">删除</button>')
           + '</div></div>';
       }
@@ -734,8 +732,17 @@
     }).catch(function (e) { $("userList").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
   }
   $("btnUserAdd").addEventListener("click", function () {
-    api("/api/users", "POST", { action: "add", username: $("nuName").value.trim(), password: $("nuPass").value, device: $("nuDev").value })
-      .then(function () { toast("已添加 ✓，该用户只能管理其绑定的设备"); renderUsers(); })
+    api("/api/users", "POST", { action: "add", username: $("nuName").value.trim(),
+      password: $("nuPass").value, expires: $("nuExp").value.trim() })
+      .then(function () { toast("账号已创建 ✓，平板填「账号名:口令」即可同步"); renderUsers(); })
+      .catch(function (e) { toast(e.message, 3500); });
+  });
+  $("btnUserRenew").addEventListener("click", function () {
+    var u = $("nuName").value.trim(), m = parseInt($("nuRenewMonths").value, 10);
+    if (!u) { toast("请先填账号名"); return; }
+    if (!m || m < 1) { toast("请填续费月数"); return; }
+    api("/api/users", "POST", { action: "renew", username: u, months: m })
+      .then(function (j) { toast("已续费 " + m + " 个月 ✓"); renderUsers(); })
       .catch(function (e) { toast(e.message, 3500); });
   });
   $("btnUserPass").addEventListener("click", function () {
@@ -751,7 +758,11 @@
   });
   $("userList").addEventListener("click", function (e) {
     var b = e.target.closest("button"); if (!b) return;
-    if (b.dataset.a === "pass") {
+    if (b.dataset.a === "renew") {
+      api("/api/users", "POST", { action: "renew", username: b.dataset.u, months: 12 })
+        .then(function () { toast("已续费 1 年 ✓"); renderUsers(); })
+        .catch(function (er) { toast(er.message, 3500); });
+    } else if (b.dataset.a === "pass") {
       var np = prompt("为 " + b.dataset.u + " 设置新口令（至少 6 位）：");
       if (!np) return;
       api("/api/users", "POST", { action: "passwd", username: b.dataset.u, password: np })
