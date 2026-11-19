@@ -197,6 +197,7 @@ public class PairActivity extends Activity {
         private volatile boolean mRunning = false;
         private int mPort = -1;
         private String mPin = "";
+        private int mPinFails = 0;
         private Listener mListener;
 
         PairServer(Context ctx) {
@@ -249,6 +250,24 @@ public class PairActivity extends Activity {
 
         private void notifyEvent(String msg) {
             if (mListener != null) mListener.onEvent(msg);
+        }
+
+        /**
+         * 配对码统一校验：错误时线性加延迟（0.8s×次数，封顶 5s）。
+         * accept 循环单线程串行处理请求，延迟会卡住后续尝试，
+         * 局域网设备无法在页面存活期间爆破 4 位配对码。
+         */
+        private boolean pinOk(String pin) {
+            if (mPin != null && mPin.equals(pin)) {
+                mPinFails = 0;
+                return true;
+            }
+            mPinFails++;
+            try {
+                Thread.sleep(Math.min(800L * mPinFails, 5000L));
+            } catch (InterruptedException ignored) {
+            }
+            return false;
         }
 
         private void handle(Socket s) {
@@ -305,13 +324,8 @@ public class PairActivity extends Activity {
 
         private void doSave(Socket s, String body) {
             Map<String, String> p = parseForm(body);
-            if (!mPin.equals(p.get("pin"))) {
+            if (!pinOk(p.get("pin"))) {
                 notifyEvent("手机提交了错误的配对码，已拒绝");
-                // 错误配对码加延迟，防止局域网设备爆破 4 位数字
-                try {
-                    Thread.sleep(800);
-                } catch (InterruptedException ignored) {
-                }
                 respond(s, msgHtml("配对码不正确，请核对平板上显示的 4 位数字。"));
                 return;
             }
@@ -344,7 +358,7 @@ public class PairActivity extends Activity {
 
         /** 手机读取当前待办（单机版编辑页的数据源） */
         private void doTodosGet(Socket s, String pin) {
-            if (!mPin.equals(pin)) {
+            if (!pinOk(pin)) {
                 notifyEvent("手机读取待办时配对码错误，已拒绝");
                 respondJson(s, "{\"ok\":false,\"error\":\"配对码不正确\"}");
                 return;
@@ -354,7 +368,7 @@ public class PairActivity extends Activity {
 
         /** 手机保存整份待办到本地缓存，并重排提醒闹钟 */
         private void doTodosSave(Socket s, String body, String pin) {
-            if (!mPin.equals(pin)) {
+            if (!pinOk(pin)) {
                 notifyEvent("手机提交待办时配对码错误，已拒绝");
                 respondJson(s, "{\"ok\":false,\"error\":\"配对码不正确\"}");
                 return;

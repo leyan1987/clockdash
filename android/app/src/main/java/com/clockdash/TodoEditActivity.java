@@ -183,7 +183,8 @@ public class TodoEditActivity extends Activity {
         String title = text(v, R.id.etTitle);
         String date = text(v, R.id.etDate);
         String time = text(v, R.id.etTime);
-        if (title.length() == 0 || date.length() != 10 || time.length() != 5) return null;
+        // 严格格式校验：日期须真实存在（2026-02-30 拒绝），时间不超 23:59
+        if (title.length() == 0 || !Store.validDate(date) || !Store.validTime(time)) return null;
         Todo t = base == null ? new Todo() : base;
         t.id = base == null || base.id == null || base.id.length() == 0
                 ? "t" + System.currentTimeMillis() : base.id;

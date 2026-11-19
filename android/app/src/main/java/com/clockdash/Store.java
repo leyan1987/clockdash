@@ -77,6 +77,45 @@ public final class Store {
     }
 
     /**
+     * 严格校验 yyyy-MM-dd：拒绝 2026-13-45 这类长度合法但会静默翻滚的输入。
+     * 手机扫码页、平板编辑页、本地缓存写盘三处共用。
+     */
+    public static boolean validDate(String s) {
+        if (s == null || s.length() != 10 || s.charAt(4) != '-' || s.charAt(7) != '-') return false;
+        int y, m, d;
+        try {
+            y = Integer.parseInt(s.substring(0, 4));
+            m = Integer.parseInt(s.substring(5, 7));
+            d = Integer.parseInt(s.substring(8, 10));
+        } catch (Exception e) {
+            return false;
+        }
+        if (m < 1 || m > 12 || d < 1 || d > 31 || y < 2000 || y > 2100) return false;
+        java.util.Calendar c = java.util.Calendar.getInstance();
+        c.clear();
+        c.setLenient(false);
+        c.set(y, m - 1, d);
+        try {
+            c.getTimeInMillis(); // 2月30日等在严格模式下抛异常
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 严格校验 HH:mm（00-23:00-59），与 服务端 _parse_hhmm 对齐 */
+    public static boolean validTime(String s) {
+        if (s == null || s.length() != 5 || s.charAt(2) != ':') return false;
+        try {
+            int h = Integer.parseInt(s.substring(0, 2));
+            int m = Integer.parseInt(s.substring(3, 5));
+            return h <= 23 && m <= 59;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * 本地配置页保存整份待办（单机版的核心写路径）。
      * 校验规则与服务端 validate_todos 对齐，避免写坏缓存导致待办全空。
      * 成功后 rev +1，界面按 mtime 变化重绘，闹钟由调用方重排。
@@ -93,8 +132,12 @@ public final class Store {
                 String date = o.optString("date", "");
                 String time = o.optString("time", "");
                 String rep = o.optString("repeat", "none");
-                if (title.length() == 0 || date.length() != 10 || time.length() != 5) return false;
-                if (!"none,hourly,daily,weekly,monthly,yearly".contains(rep)) return false;
+                if (title.length() == 0 || title.length() > 200) return false;
+                if (!validDate(date) || !validTime(time)) return false;
+                if (!"none".equals(rep) && !"hourly".equals(rep) && !"daily".equals(rep)
+                        && !"weekly".equals(rep) && !"monthly".equals(rep) && !"yearly".equals(rep)) {
+                    return false;
+                }
             }
             JSONObject out = new JSONObject();
             out.put("version", 1);

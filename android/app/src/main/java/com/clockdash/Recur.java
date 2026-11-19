@@ -180,8 +180,10 @@ public final class Recur {
         try {
             String[] p = date.split("-");
             c.clear();
+            c.setLenient(false); // 2026-02-30 这类日期抛异常，而不是静默翻滚成 3 月
             c.set(Integer.parseInt(p[0]), Integer.parseInt(p[1]) - 1, Integer.parseInt(p[2]), 0, 0, 0);
             c.set(Calendar.MILLISECOND, 0);
+            c.getTimeInMillis(); // 强制触发计算，lenient 错误在此抛出
             return true;
         } catch (Exception e) {
             return false;
