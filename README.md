@@ -218,6 +218,20 @@ modern 版含现代系统适配：通知渠道（8.0+）、PendingIntent 不可�
 | `tests/RecurTest.java` | 循环引擎：六种重复、间隔、星期、月末跳过、闰年、结束日期、上限 | `javac -encoding UTF-8 -d out android/.../{Recur,Todo}.java tests/RecurTest.java && java -cp out RecurTest` | ✅ 26/26 |
 | `tests/audit.py` | 静态审计：Java↔资源↔Manifest 交叉引用、Intent extras 对称 | `python tests/audit.py` | ✅ 无缺失 |
 
+## 安全与运维加固
+
+服务器虽因老安卓限制走明文 HTTP，但已做多层防护：
+
+- **鉴权**：设备/账号口令与网页会话双通道；口令与会话均哈希落盘（PBKDF2 60 万次 / SHA256 摘要），旧格式首次使用静默升级
+- **限流**：登录失败按账号+IP 双维度锁定；接口按 IP 120 次/分钟限流，异常请求 429
+- **会话**：30 天绝对有效期 + 7 天空闲超时 + 每账号最多 5 个并发会话
+- **审计日志**：时间戳 + IP + 账号 + 方法 + 路径 + 状态码，不记录 URL 中的口令
+- **安全响应头**：X-Content-Type-Options / X-Frame-Options / Referrer-Policy / CSP（放行看板与后台直连的天气/城市 API 域）
+- **可靠性**：线程上限 64 + 15 秒 socket 超时（防慢连接攻击），端口占用明确报错，设备库损坏自动降级
+- **备份**：网页一键备份/恢复 + systemd 定时器，恢复前自动留底、逐文件校验和
+- **systemd 加固**：ProtectSystem/ProtectHome/PrivateTmp，仅放行 data 与 backups 两个可写目录
+- **探活**：`GET /api/health` 匿名返回 `{"ok":true}`，供监控/负载均衡使用
+
 ## 设计取舍
 
 - **纯 HTTP + 口令**而不是 HTTPS：老安卓 TLS 能力太弱（TLS 1.0-only + 旧证书库），自建 CA/钉证书在现代 OpenSSL 上配置 TLSv1 又极其麻烦。待办数据不敏感，口令 + 不放行多余权限足够家用；VPS 端口不要与敏感服务复用。

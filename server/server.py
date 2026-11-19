@@ -7,7 +7,9 @@
   POST /api/login    网页登录（用户名+口令 → 会话）
   POST /api/logout   退出登录
   GET  /api/users    用户列表（仅管理员）
-  POST /api/users    用户管理：add/passwd/del（仅管理员）
+  POST /api/users    用户管理：add/passwd/del/renew(续费)（仅管理员）
+  GET  /api/backup   备份列表（仅管理员）
+  POST /api/backup   备份/恢复：create/restore（仅管理员）
   GET  /api/health   匿名健康检查（监控探活，无需鉴权）
   GET  /api/ping     连通性测试（需口令/会话）
   GET  /api/todos    读取待办规则（需口令/会话）
