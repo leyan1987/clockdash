@@ -68,6 +68,7 @@ WATCH_CONFIG_FILE = os.path.join(DATA_DIR, "watchdog-config.json")
 WATCH_STATE_FILE = os.path.join(DATA_DIR, "watchdog-state.json")
 
 SESSION_TTL = 30 * 86400   # 网页登录会话有效期 30 天
+_LOGIN_FAIL = {"count": 0, "until": 0.0}   # 登录失败全局退避：并行爆破也被拖慢
 _PBKDF2_ITER = 100000      # 口令哈希迭代次数
 _SERVER_START = time.time()  # 用于避免服务刚重启、平板还没首次上报时的误报
 
@@ -149,7 +150,13 @@ def ensure_data():
 
 def read_token():
     with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-        return f.read().strip()
+        tok = f.read().strip()
+    if not tok:   # 文件被清空时重新生成，避免空口令登入
+        tok = secrets.token_hex(8).upper()
+        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+            f.write(tok)
+        sys.stderr.write("[warn] 检测到空口令，已重新生成: %s\n" % tok)
+    return tok
 
 
 # ---------- 用户库与会话（网页后台登录） ----------
@@ -620,6 +627,27 @@ def bump_todo_rev(dev_id):
         return nxt
 
 
+def _parse_ymd(s, label="日期"):
+    """严格解析 yyyy-MM-dd 并限定年份范围：防注入，也防超老锚点拖垮展开循环"""
+    try:
+        dt = datetime.strptime(str(s), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        raise ValueError(label + "格式应为 yyyy-MM-dd")
+    if not (2000 <= dt.year <= 2100):
+        raise ValueError(label + "超出支持年份 (2000-2100)")
+    return dt
+
+
+def _parse_hhmm(s, label="时间"):
+    s = str(s or "")
+    if not re.fullmatch(r"\d{1,2}:\d{2}", s):
+        raise ValueError(label + "格式应为 HH:mm")
+    h, m = int(s.split(":")[0]), int(s.split(":")[1])
+    if h > 23 or m > 59:
+        raise ValueError(label + "超出 24 小时范围")
+    return h, m
+
+
 def validate_todos(doc):
     if not isinstance(doc, dict) or not isinstance(doc.get("todos"), list):
         raise ValueError("数据缺少 todos 数组")
@@ -627,26 +655,39 @@ def validate_todos(doc):
     for i, t in enumerate(doc["todos"]):
         if not isinstance(t, dict) or not str(t.get("title", "")).strip():
             raise ValueError("第 %d 条缺少标题" % (i + 1))
-        if not isinstance(t.get("date"), str) or len(t["date"]) != 10:
-            raise ValueError("第 %d 条日期格式应为 yyyy-MM-dd" % (i + 1))
+        _parse_ymd(t.get("date"), "第 %d 条日期" % (i + 1))
         if not isinstance(t.get("time"), str) or len(t["time"]) != 5:
             raise ValueError("第 %d 条时间格式应为 HH:mm" % (i + 1))
+        _parse_hhmm(t["time"], "第 %d 条时间" % (i + 1))
         rep = t.get("repeat", "none")
         if rep not in REPEATS:
             raise ValueError("第 %d 条 repeat 取值不合法" % (i + 1))
+        try:
+            remind = int(t.get("remind", 0) or 0)
+        except (TypeError, ValueError):
+            raise ValueError("第 %d 条 remind 不合法" % (i + 1))
         item = {"id": str(t.get("id") or ("t%d" % (i + 1)))[:64],
                 "title": str(t["title"]).strip()[:200],
                 "date": t["date"], "time": t["time"],
-                "remind": max(-1, min(int(t.get("remind", 0) or 0), 525600)),
+                "remind": max(-1, min(remind, 525600)),
                 "repeat": rep}
         if rep != "none":
-            item["interval"] = max(1, int(t.get("interval", 1) or 1))
+            try:
+                item["interval"] = max(1, int(t.get("interval", 1) or 1))
+            except (TypeError, ValueError):
+                raise ValueError("第 %d 条 interval 不合法" % (i + 1))
         if rep == "weekly" and isinstance(t.get("weekdays"), list) and t["weekdays"]:
-            item["weekdays"] = [int(w) for w in t["weekdays"] if 1 <= int(w) <= 7]
+            try:
+                item["weekdays"] = [int(w) for w in t["weekdays"] if 1 <= int(w) <= 7]
+            except (TypeError, ValueError):
+                raise ValueError("第 %d 条 weekdays 不合法" % (i + 1))
         if rep == "hourly":
-            item["window_from"] = str(t.get("window_from") or "08:00")
-            item["window_to"] = str(t.get("window_to") or "22:00")
+            _parse_hhmm(t.get("window_from"), "第 %d 条时间窗起点" % (i + 1))
+            _parse_hhmm(t.get("window_to"), "第 %d 条时间窗终点" % (i + 1))
+            item["window_from"] = str(t.get("window_from") or "08:00")[:5]
+            item["window_to"] = str(t.get("window_to") or "22:00")[:5]
         if isinstance(t.get("end"), str) and len(t["end"]) == 10:
+            _parse_ymd(t.get("end"), "第 %d 条结束日期" % (i + 1))
             item["end"] = t["end"]
         out.append(item)
     return {"version": 1, "todos": out}
@@ -739,10 +780,10 @@ def expand_rule(t, frm, to):
             day += timedelta(days=1)
 
     elif rep == "daily":
+        # 算术对齐起点，避免从超老锚点逐日追赶（0001 年锚点可达数十万次迭代）
         from_day = frm.replace(hour=0, minute=0, second=0, microsecond=0)
-        c = anchor
-        while c < from_day:
-            c += timedelta(days=step)
+        gap = (from_day - anchor).days
+        c = anchor + timedelta(days=(gap + step - 1) // step * step)
         for _ in range(500):
             if c > to or len(out) >= _HIST_CAP:
                 break
@@ -762,9 +803,8 @@ def expand_rule(t, frm, to):
                 pass
         if not wds:
             from_day = frm.replace(hour=0, minute=0, second=0, microsecond=0)
-            c = anchor
-            while c < from_day:
-                c += timedelta(days=7 * step)
+            gap = (from_day - anchor).days
+            c = anchor + timedelta(days=(gap + 7 * step - 1) // (7 * step) * (7 * step))
             for _ in range(500):
                 if c > to or len(out) >= _HIST_CAP:
                     break
@@ -1071,6 +1111,10 @@ def get_weather(dev_id):
     if result.get("ok"):
         with _WX_LOCK:
             _WX_CACHE[dev_id] = {"ts": now, "data": result}
+    else:
+        # 失败也做 60 秒负缓存：上游故障时每台设备每次轮询不再重新打满超时
+        with _WX_LOCK:
+            _WX_CACHE[dev_id] = {"ts": now - (WX_TTL - 60), "data": result}
     return result
 
 
@@ -1165,6 +1209,8 @@ class Handler(SimpleHTTPRequestHandler):
         return None
 
     def _handle_login(self, doc):
+        if _LOGIN_FAIL["until"] > time.time():
+            return self._send_json({"error": "尝试过于频繁，请稍后再试"}, 429)
         username = str(doc.get("username", "")).strip()
         password = str(doc.get("password", ""))
         u = None
@@ -1173,8 +1219,12 @@ class Handler(SimpleHTTPRequestHandler):
                 u = x
                 break
         if u is None or not verify_password(u, password):
+            _LOGIN_FAIL["count"] += 1
             time.sleep(random.uniform(0.3, 0.8))
+            if _LOGIN_FAIL["count"] >= 5:
+                _LOGIN_FAIL["until"] = time.time() + 60
             return self._send_json({"error": "用户名或口令错误"}, 401)
+        _LOGIN_FAIL["count"] = 0
         role = u.get("role", "user")
         sid = create_session(username, role)
         return self._send_json({"ok": True, "session": sid,
@@ -1233,6 +1283,10 @@ class Handler(SimpleHTTPRequestHandler):
         return self._send_json({"ok": True})
 
     def _handle_watch_config(self, doc):
+        with _SAVE_LOCK:
+            return self._handle_watch_config_locked(doc)
+
+    def _handle_watch_config_locked(self, doc):
         c = load_watch_config()
         for k in ("enabled", "notify_recover"):
             if k in doc:
@@ -1295,10 +1349,14 @@ class Handler(SimpleHTTPRequestHandler):
             if a is None:
                 return self._send_json({"error": "未登录"}, 401)
             if p == "/api/watchdog":
+                if a.get("mode") == "device":
+                    return self._send_json({"error": "设备口令无权访问，请使用管理员账号登录"}, 403)
                 if a.get("role") != "admin":
                     return self._send_json({"error": "需要管理员权限"}, 403)
                 return self._send_json(watchdog_status())
             if p == "/api/users":
+                if a.get("mode") == "device":
+                    return self._send_json({"error": "设备口令无权访问，请使用管理员账号登录"}, 403)
                 if a.get("role") != "admin":
                     return self._send_json({"error": "需要管理员权限"}, 403)
                 return self._send_json({"ok": True,
@@ -1317,6 +1375,12 @@ class Handler(SimpleHTTPRequestHandler):
                     return self._send_json({"ok": True,
                                             "devices": [{"id": d["id"], "name": d.get("name", "")}
                                                         for d in mine]})
+                if a.get("mode") == "device":
+                    # 设备口令只看得到自己这台：多设备部署时口令互不可见
+                    mine = [d for d in devs if d["id"] == a.get("dev")]
+                    return self._send_json({"ok": True,
+                                            "devices": [{"id": d["id"], "name": d.get("name", ""),
+                                                         "token": d.get("token", "")} for d in mine]})
                 return self._send_json({"ok": True,
                                         "devices": [{"id": d["id"], "name": d.get("name", ""),
                                                      "token": d.get("token", "")} for d in devs]})
@@ -1343,7 +1407,7 @@ class Handler(SimpleHTTPRequestHandler):
             if p == "/api/holidays":
                 return self._send_json(get_holidays())
             if p == "/api/history":
-                qs = parse_qs(urlparse(self.path).query)
+                qs = parse_qs(urlparse(self.path).query)  # noqa: 占位保持结构
                 return self._send_json(get_history(dev,
                                                    (qs.get("days") or [90])[0],
                                                    (qs.get("q") or [""])[0],
@@ -1374,9 +1438,8 @@ class Handler(SimpleHTTPRequestHandler):
         a = self._auth()
         if p not in ("/api/login", "/api/logout") and a is None:
             return self._send_json({"error": "未登录"}, 401)
-        if p in ("/api/users", "/api/devices", "/api/watchdog",
-                 "/api/watchdog/test") and a.get("role") != "admin":
-            return self._send_json({"error": "需要管理员权限"}, 403)
+        if p in ("/api/users", "/api/watchdog", "/api/watchdog/test") and a.get("mode") == "device":
+            return self._send_json({"error": "设备口令无权访问，请使用管理员账号登录"}, 403)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
             if n > 1024 * 1024:
@@ -1469,6 +1532,27 @@ class Handler(SimpleHTTPRequestHandler):
                 for k in keys:
                     if k in doc:
                         cfg[k] = doc[k]
+                if "lat" in cfg and cfg["lat"] not in ("", None):
+                    try:
+                        cfg["lat"] = float(cfg["lat"])
+                    except (TypeError, ValueError):
+                        return self._send_json({"error": "纬度不合法"}, 400)
+                if "lon" in cfg and cfg["lon"] not in ("", None):
+                    try:
+                        cfg["lon"] = float(cfg["lon"])
+                    except (TypeError, ValueError):
+                        return self._send_json({"error": "经度不合法"}, 400)
+                for tk in ("todos_min", "weather_min"):
+                    try:
+                        cfg[tk] = max(1, int(cfg.get(tk, 60)))
+                    except (TypeError, ValueError):
+                        cfg[tk] = 60
+                for tk in ("night_start", "night_end"):
+                    try:
+                        hh, mmm = str(cfg.get(tk, "22:30")).split(":")
+                        assert 0 <= int(hh) <= 23 and 0 <= int(mmm) <= 59
+                    except Exception:
+                        return self._send_json({"error": tk + " 时间格式应为 HH:mm"}, 400)
                 cfg["rev"] = int(cfg.get("rev", 0)) + 1
                 rev = cfg["rev"]
                 atomic_write(config_path(dev), json.dumps(cfg, ensure_ascii=False, indent=2))
@@ -1481,10 +1565,11 @@ class Handler(SimpleHTTPRequestHandler):
                     except Exception:
                         pass
             return self._send_json({"ok": True, "rev": rev})
-        except ValueError as e:
+        except (ValueError, TypeError) as e:
             return self._send_json({"error": str(e)}, 400)
         except Exception as e:
-            return self._send_json({"error": "保存失败: %s" % e}, 500)
+            sys.stderr.write("[api] 保存异常: %r\n" % e)
+            return self._send_json({"error": "保存失败，详情见服务器日志"}, 500)
 
     def _handle_devices(self, doc):
         act = str(doc.get("action", ""))
@@ -1526,6 +1611,23 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json({"error": "用户 " + ", ".join(u["username"] for u in bound)
                                         + " 绑定在此设备上，请先删除或转移这些用户"}, 400)
             devices = [d for d in devices if d.get("id") != devid]
+            # 同步清理该设备的关联状态（看护/天气缓存/版本号/历史文件）
+            with _SAVE_LOCK:
+                ws = load_watch_state()
+                for k in ("devices", "alerts", "messages"):
+                    ws.get(k, {}).pop(devid, None)
+                ws["history"] = [h for h in ws.get("history", []) if h.get("device") != devid]
+                save_watch_state(ws)
+            _WX_CACHE.pop(devid, None)
+            st = load_json(STATE_FILE, {})
+            if isinstance(st.get("todo_rev"), dict):
+                st["todo_rev"].pop(devid, None)
+                atomic_write(STATE_FILE, json.dumps(st))
+            for f in (todos_path(devid), config_path(devid), history_path(devid)):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
         else:
             return self._send_json({"error": "未知操作"}, 400)
         atomic_write(DEVICES_FILE, json.dumps({"devices": devices}, ensure_ascii=False, indent=2))

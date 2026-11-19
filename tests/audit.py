@@ -31,7 +31,9 @@ styles = set(re.findall(r'<style name="(\w+)"', read(ROOT + "/res/values/styles.
 mani = read(ROOT + "/AndroidManifest.xml")
 
 # 1) Java 里引用的 R.* 必须存在
-for kind, name in sorted(set(re.findall(r'R\.(id|layout|string|color|style)\.(\w+)', java_all))):
+for kind, name in sorted(set(re.findall(r'(?<!android\.)R\.(id|layout|string|color|style)\.(\w+)', java_all))):
+    if name.startswith(("simple_spinner", "simple_dropdown", "simple_list_item", "select_dialog")):
+        continue  # 框架资源 android.R.layout/android.R.style.*，非本地资源
     if kind == "id" and name not in ids_defined:
         problems.append("Java 引用了不存在的 id: R.id.%s" % name)
     if kind == "layout" and not os.path.exists(ROOT + "/res/layout/%s.xml" % name):

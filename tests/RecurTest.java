@@ -135,6 +135,7 @@ public class RecurTest {
         Calendar t1300 = (Calendar) today.clone(); t1300.set(Calendar.HOUR_OF_DAY, 13); t1300.set(Calendar.MINUTE, 0);
         Calendar t2100 = (Calendar) today.clone(); t2100.set(Calendar.HOUR_OF_DAY, 21); t2100.set(Calendar.MINUTE, 0);
         Calendar horizon = (Calendar) today.clone(); horizon.add(Calendar.DAY_OF_MONTH, 7);
+        horizon.set(Calendar.HOUR_OF_DAY, 23); horizon.set(Calendar.MINUTE, 59); // horizon 含全天，避免按当前时刻提前截断
 
         // 一次性 今天09:50：13:00 查不出现；08:00 查出现且为今天 09:50
         eq("回归:过点的一次性待办不出现", 0,
