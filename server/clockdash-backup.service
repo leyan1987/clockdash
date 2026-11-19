@@ -4,11 +4,13 @@ After=network.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/clockdash
-ExecStart=/usr/bin/python3 /opt/clockdash/backup.py create --data /opt/clockdash/data --out /opt/clockdash/backups --keep 30
-# 备份文件含凭据，限制服务进程权限
+WorkingDirectory=/home/server
+ExecStart=/usr/bin/python3 /home/server/backup.py create --data /home/server/data --out /home/server/backups --keep 30
+# 备份文件含凭据，限制服务进程权限。
+# 注意：应用现在位于 /home/server，ProtectHome=true 会让服务连自己的
+# backup.py 都读不到，故改为 read-only 并用 ReadWritePaths 精确放行可写目录。
 NoNewPrivileges=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/clockdash/backups
+ProtectHome=read-only
+ReadWritePaths=/home/server/data /home/server/backups
 PrivateTmp=true
