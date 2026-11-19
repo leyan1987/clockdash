@@ -119,11 +119,20 @@
 <body>
 <div id="tokenGate"><div class="box">
   <h2>时钟看板</h2>
-  <p class="hint">请输入本机设备口令（网页后台“设备”区块可查看）</p>
-  <input id="gateToken" placeholder="设备口令">
+  <p class="hint">请输入账号口令（形如 账号名:口令，或只填口令）</p>
+  <input id="gateToken" placeholder="账号名:口令">
   <br><button id="gateGo">进入</button>
-  <p class="hint">口令将保存在本机，之后无需重复输入</p>
+  <p class="hint">同一账号的所有看板与平板同步同一套内容；口令将保存在本机，无需重复输入</p>
+  <p class="hint" id="gateErr" style="color:#e06c5a"></p>
 </div></div>
+
+<div id="expiredGate" style="display:none;position:fixed;inset:0;z-index:70;background:#0f1419;align-items:center;justify-content:center">
+  <div class="box" style="text-align:center">
+    <h2>订阅已到期</h2>
+    <p class="hint" style="color:#e0a860">请联系服务商续费，续费后刷新本页即可恢复同步。<br>时钟与日历仍可显示。</p>
+    <button id="expiredRefresh" style="margin-top:14px;padding:10px 30px;font-size:16px;border:0;border-radius:8px;background:#2f7fd1;color:#fff">重新加载</button>
+  </div>
+</div>
 
 <div id="board">
   <div class="col">
@@ -415,6 +424,12 @@ function api(path) {
     headers: { "X-Token": TOKEN, "X-Client": "board" }
   }).then(function (r) {
     return r.json().then(function (j) {
+      if (r.status === 402 || j.error === "SUBSCRIPTION_EXPIRED") {
+        // 订阅到期：显示续费提示，停止刷新，但不再弹出报错
+        var g = document.getElementById("expiredGate");
+        if (g) { g.style.display = "flex"; }
+        var err = new Error("SUBSCRIPTION_EXPIRED"); err.code = 402; throw err;
+      }
       if (!r.ok) throw new Error(j.error || r.status);
       return j;
     });
@@ -959,10 +974,28 @@ function shiftMonth(delta) {
 $("gateGo").addEventListener("click", function () {
   var t = $("gateToken").value.trim();
   if (!t) return;
-  TOKEN = t; localStorage.setItem("board_token", t);
-  $("tokenGate").style.display = "none";
-  boot();
+  $("gateErr").textContent = "正在验证…";
+  // 先用这个口令探一次接口：验证凭据有效、也顺便发现订阅是否已到期。
+  // 直接 boot 的话，过期口令会进到看板后每个接口都 402、满屏报错。
+  fetch("/api/ping?token=" + encodeURIComponent(t), { headers: { "X-Token": t, "X-Client": "board" } })
+    .then(function (r) { return r.json().then(function (j) { return { code: r.status, j: j }; }); })
+    .then(function (res) {
+      if (res.code === 402) {
+        $("gateErr").textContent = "该账号订阅已到期，请续费后再进入";
+        return;
+      }
+      if (res.code !== 200 || !res.j.ok) {
+        $("gateErr").textContent = "口令不正确或服务器不可达";
+        return;
+      }
+      TOKEN = t; localStorage.setItem("board_token", t);
+      $("tokenGate").style.display = "none";
+      boot();
+    })
+    .catch(function () { $("gateErr").textContent = "无法连接服务器，请检查地址与网络"; });
 });
+var expBtn = document.getElementById("expiredRefresh");
+if (expBtn) expBtn.addEventListener("click", function () { location.reload(); });
 $("gateToken").addEventListener("keydown", function (e) { if (e.key === "Enter") $("gateGo").click(); });
 function boot() {
   unlockAudio();
