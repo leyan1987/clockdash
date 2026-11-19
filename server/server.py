@@ -43,6 +43,7 @@
 """
 import hashlib
 import hmac
+import io
 import json
 import os
 import random
@@ -59,6 +60,16 @@ from urllib.parse import urlparse, parse_qs
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE, "web")
 DATA_DIR = os.path.join(BASE, "data")
+BACKUP_DIR = os.path.join(BASE, "backups")
+try:
+    # 按文件路径加载，不依赖 sys.path：脚本直接运行 / 被 import 两种方式都能用
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("clockdash_backup", os.path.join(BASE, "backup.py"))
+    _backup = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_backup)   # 网页端备份/恢复复用 backup.py 同一套逻辑
+except Exception as _be:
+    _backup = None
+    sys.stderr.write("[warn] backup.py 不可用，网页备份功能禁用: %r\n" % _be)
 TOKEN_FILE = os.path.join(DATA_DIR, "server-token.txt")
 TODOS_FILE = os.path.join(DATA_DIR, "todos.json")
 CONFIG_FILE = os.path.join(DATA_DIR, "app-config.json")
@@ -1452,6 +1463,64 @@ class Handler(SimpleHTTPRequestHandler):
         save_users(users)
         return self._send_json({"ok": True})
 
+    # ---------- 备份 / 恢复（网页后台，仅管理员会话） ----------
+
+    def _handle_backup_get(self, qs):
+        action = (qs.get("action") or ["list"])[0]
+        if _backup is None:
+            return self._send_json({"error": "backup.py 不可用，请检查服务端安装"}, 500)
+        if action == "list":
+            out = []
+            if os.path.isdir(BACKUP_DIR):
+                for n in sorted(os.listdir(BACKUP_DIR), reverse=True):
+                    p = os.path.join(BACKUP_DIR, n)
+                    if not (n.endswith(".tar.gz") and os.path.isfile(p)):
+                        continue
+                    out.append({"name": n, "size": os.path.getsize(p),
+                                "mtime": int(os.path.getmtime(p)),
+                                "pre_restore": n.startswith("pre-restore-")})
+            return self._send_json({"ok": True, "backups": out,
+                                    "data_dir": DATA_DIR})
+        return self._send_json({"error": "未知操作"}, 400)
+
+    def _handle_backup_post(self, doc):
+        action = str(doc.get("action", ""))
+        if _backup is None:
+            return self._send_json({"error": "backup.py 不可用，请检查服务端安装"}, 500)
+        # 所有备份命令串行执行：避免两个恢复/备份同时改同一批文件
+        with _SAVE_LOCK:
+            try:
+                if action == "create":
+                    path = _backup.create(DATA_DIR, BACKUP_DIR, _backup.KEEP_DEFAULT)
+                    return self._send_json({"ok": True,
+                                            "name": os.path.basename(path),
+                                            "size": os.path.getsize(path)})
+                if action == "restore":
+                    name = str(doc.get("name", ""))
+                    # 严格校验文件名：只允许 backups 目录内的普通 .tar.gz，
+                    # 绝不接受路径穿越（网页传什么都不能写到 data 目录之外）
+                    if not re.fullmatch(r"[A-Za-z0-9_.\-]+\.tar\.gz", name) or ".." in name:
+                        return self._send_json({"error": "备份文件名不合法"}, 400)
+                    path = os.path.join(BACKUP_DIR, name)
+                    if not os.path.isfile(path):
+                        return self._send_json({"error": "备份文件不存在"}, 404)
+                    # force 必须由前端二次确认后显式传入；默认拒绝覆盖
+                    # restore 会把 stdout 打到服务日志，这里临时接管以便回传结果
+                    buf = io.StringIO()
+                    old = sys.stdout
+                    try:
+                        sys.stdout = buf
+                        _backup.restore(path, DATA_DIR, BACKUP_DIR,
+                                        force=bool(doc.get("force")), dry_run=False)
+                    finally:
+                        sys.stdout = old
+                    return self._send_json({"ok": True, "name": name,
+                                            "log": buf.getvalue()[-800:]})
+                return self._send_json({"error": "未知操作"}, 400)
+            except Exception as e:
+                sys.stderr.write("[backup] 操作失败: %r\n" % e)
+                return self._send_json({"error": str(e)}, 400)
+
     def _handle_watch_config(self, doc):
         with _SAVE_LOCK:
             return self._handle_watch_config_locked(doc)
@@ -1514,7 +1583,7 @@ class Handler(SimpleHTTPRequestHandler):
         p = urlparse(self.path).path
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
                  "/api/holidays", "/api/check", "/api/users", "/api/devices",
-                 "/api/history", "/api/watchdog"):
+                 "/api/history", "/api/watchdog", "/api/backup"):
             a = self._auth()
             if a is None:
                 return self._send_json({"error": "未登录"}, 401)
@@ -1558,6 +1627,11 @@ class Handler(SimpleHTTPRequestHandler):
                     mine = [d for d in devs if d["id"] == a.get("dev")]
                     return self._send_json({"ok": True, "devices": [dev_view(d) for d in mine]})
                 return self._send_json({"ok": True, "devices": [dev_view(d) for d in devs]})
+            if p == "/api/backup":
+                # 服务器级：仅管理员会话，设备口令/普通用户一律拒绝
+                if a.get("mode") != "session" or a.get("role") != "admin":
+                    return self._send_json({"error": "仅管理员可访问备份功能"}, 403)
+                return self._handle_backup_get(parse_qs(urlparse(self.path).query))
             # 以下为设备级接口
             if p not in ("/api/ping", "/api/holidays"):
                 dev = self._resolve_dev(a)
@@ -1607,7 +1681,7 @@ class Handler(SimpleHTTPRequestHandler):
         p = urlparse(self.path).path
         if p not in ("/api/todos", "/api/config", "/api/login", "/api/logout",
                      "/api/users", "/api/devices", "/api/watchdog",
-                     "/api/watchdog/test", "/api/message"):
+                     "/api/watchdog/test", "/api/message", "/api/backup"):
             return self.send_error(404)
         a = self._auth()
         if p not in ("/api/login", "/api/logout") and a is None:
@@ -1615,7 +1689,8 @@ class Handler(SimpleHTTPRequestHandler):
         # 设备/用户/看护均属管理面：设备口令和普通用户会话都不得访问。
         # 实测漏洞：设备令牌 role 恒为 admin，若只拦 users/watchdog，
         # 任何平板拿自己的口令就能增删/删除其他设备（已复现）。
-        if p in ("/api/users", "/api/devices", "/api/watchdog", "/api/watchdog/test") \
+        if p in ("/api/users", "/api/devices", "/api/watchdog", "/api/watchdog/test",
+                 "/api/backup") \
                 and (a.get("mode") == "device" or a.get("role") != "admin"):
             return self._send_json({"error": "仅管理员账号可访问该接口"}, 403)
         try:
@@ -1632,6 +1707,8 @@ class Handler(SimpleHTTPRequestHandler):
                 if sid:
                     drop_session(sid)
                 return self._send_json({"ok": True})
+            if p == "/api/backup":
+                return self._handle_backup_post(doc)
             if p == "/api/watchdog":
                 return self._handle_watch_config(doc)
             if p == "/api/watchdog/test":

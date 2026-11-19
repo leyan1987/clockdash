@@ -144,6 +144,11 @@ python3 backup.py restore backups/clockdash-YYYYMMDD-HHMMSS-XXX.tar.gz \
 恢复前会校验 manifest 里每个文件的 SHA256，并拒绝绝对路径 / `..` 穿越 / 非普通文件，
 校验通过后才逐文件替换，不会写一半。目标目录已有同名文件时必须加 `--force`。
 
+**网页后台**：管理员登录后，页面底部「备份与恢复」区块可一键备份、查看备份列表、
+点选恢复。恢复需**两次确认**（确认框 + 手动输入 `RESTORE`），防止误触。
+非管理员看不到该区块；设备口令与普通用户会话调用备份 API 一律 403。
+备份是服务器级操作，不带 devid。
+
 **定时备份**：把 `clockdash-backup.service` 和 `clockdash-backup.timer` 放到
 `/etc/systemd/system/`，改好路径后：
 

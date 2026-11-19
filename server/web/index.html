@@ -273,6 +273,18 @@
     </div>
     <div class="hint">普通用户与其绑定的设备一一对应，看不到其他设备。admin 为内置管理员，不可删除。</div>
   </section>
+
+  <!-- ============ 备份与恢复（仅管理员） ============ -->
+  <section id="secBackup" hidden>
+    <h2>备份与恢复 <small>仅管理员 · 数据存于服务器 data/ 目录</small></h2>
+    <div class="btnrow">
+      <button class="primary" id="btnBackupCreate">＋ 立即备份</button>
+      <button id="btnBackupRefresh">刷新列表</button>
+    </div>
+    <div id="backupList" class="hint">加载中…</div>
+    <div class="hint">备份含口令、用户与设备凭据，文件权限 0600，请妥善保管并另存异地。自动备份由 systemd timer 每天执行。</div>
+    <div id="backupLog" class="hint" style="white-space:pre-wrap"></div>
+  </section>
 </main>
 
 <div id="toast"></div>
@@ -636,9 +648,11 @@
     // 在线看护面板仅管理员登录后台时可见；设备口令页面是给平板扫码配置用的
     var showWatch = auth.mode === "session" && auth.role === "admin";
     $("secWatch").hidden = !showWatch;
+    $("secBackup").hidden = !showWatch;
     if (showWatch) {
       loadWatch();
       if (!watchTimer) watchTimer = setInterval(loadWatch, 30000);
+      loadBackups();
     }
     $("manualUrl").textContent = location.origin;
     $("manualToken").textContent = auth.mode === "token"
@@ -752,6 +766,58 @@
         .then(function () { toast("已删除 ✓"); renderUsers(); })
         .catch(function (er) { toast(er.message, 3500); });
     }
+  });
+
+  /* ---------- 备份与恢复（服务器级，管理员专用，不走 dp()） ---------- */
+  function fmtTime(sec) {
+    var d = new Date(sec * 1000);
+    function p(n) { return n < 10 ? "0" + n : "" + n; }
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate())
+      + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function loadBackups() {
+    api("/api/backup?action=list").then(function (j) {
+      var list = j.backups || [];
+      if (!list.length) { $("backupList").innerHTML = "暂无备份，点「立即备份」创建第一份。"; return; }
+      var h = "";
+      for (var i = 0; i < list.length; i++) {
+        var b = list[i], nm = b.name;
+        var label = b.pre_restore ? "恢复前自动备份" : "常规备份";
+        h += '<div class="todo"><div class="t-main"><div class="t-title">' + esc(nm) + '</div>'
+          + '<div class="t-meta">' + label + ' · ' + fmtTime(b.mtime)
+          + ' · ' + Math.round(b.size / 1024) + ' KB</div></div>'
+          + '<div class="t-ops">'
+          + '<button class="mini" data-a="restore" data-n="' + esc(nm) + '">恢复</button>'
+          + '</div></div>';
+      }
+      $("backupList").innerHTML = h;
+    }).catch(function (e) { $("backupList").innerHTML = '<span class="err">' + esc(e.message) + '</span>'; });
+  }
+  $("btnBackupCreate").addEventListener("click", function () {
+    $("backupLog").textContent = "正在备份…";
+    api("/api/backup", "POST", { action: "create" })
+      .then(function (j) {
+        $("backupLog").textContent = "备份完成：" + j.name + "（" + Math.round(j.size / 1024) + " KB）";
+        toast("备份完成 ✓"); loadBackups();
+      })
+      .catch(function (e) { $("backupLog").textContent = "备份失败：" + e.message; toast(e.message, 3500); });
+  });
+  $("btnBackupRefresh").addEventListener("click", loadBackups);
+  $("backupList").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b || b.dataset.a !== "restore") return;
+    var nm = b.dataset.n;
+    // 双重确认：恢复会覆盖服务器上的全部用户/设备/待办数据
+    if (!confirm("确定从备份恢复？\n\n" + nm + "\n\n当前所有待办、用户和设备设置将被覆盖，此操作不可直接撤销（恢复前会自动留一份备份）。")) return;
+    var phrase = prompt("再次确认：输入 RESTORE 继续（区分大小写）：");
+    if (phrase !== "RESTORE") { toast("已取消恢复"); return; }
+    $("backupLog").textContent = "正在校验并恢复…";
+    api("/api/backup", "POST", { action: "restore", name: nm, force: true })
+      .then(function (j) {
+        $("backupLog").textContent = "恢复完成：" + nm + "\n" + (j.log || "");
+        toast("恢复完成 ✓ 页面可能需要重新登录");
+        loadBackups();
+      })
+      .catch(function (e) { $("backupLog").textContent = "恢复失败：" + e.message; toast(e.message, 4000); });
   });
 
   /* ---------- 历史待办 ---------- */
