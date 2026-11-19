@@ -91,6 +91,30 @@ LOGIN_LOCK_SECONDS = 60    # 锁定时长
 LOGIN_FAIL_TTL = 3600      # 计数条目保留时长，超时清理避免内存无限增长
 _login_fails = {"account": {}, "ip": {}}   # key -> [失败次数, 计数起始时间, 锁定截止]
 _LOGIN_LOCK = threading.Lock()             # 独立锁，避免与 _SAVE_LOCK 的磁盘写互相阻塞
+
+# 接口限流：按 IP 的滑动窗口计数，防单 IP 刷爆接口。
+# 正常平板：5分钟1次check + 1小时全量同步 + 天气10分钟 ≈ 每分钟 <1 次；
+# 网页后台操作也就每秒几次。120/分钟足够宽松，不会误伤。
+RATE_MAX_PER_MIN = 120
+_rate_hits = {}                            # ip -> [窗口起始时间, 计数]
+_RATE_LOCK = threading.Lock()
+
+
+def rate_allowed(ip):
+    now = time.time()
+    with _RATE_LOCK:
+        v = _rate_hits.get(ip)
+        if not v or now - v[0] >= 60:
+            _rate_hits[ip] = [now, 1]
+            return True
+        v[1] += 1
+        if v[1] > RATE_MAX_PER_MIN:
+            return False
+        # 顺手清理长期不活跃的 IP 条目，避免内存无限增长
+        if len(_rate_hits) > 500:
+            for k in [k for k, x in _rate_hits.items() if now - x[0] >= 60]:
+                _rate_hits.pop(k, None)
+        return True
 _PBKDF2_ITER = 600000      # 口令哈希迭代次数（旧哈希自带 iterations 字段，验证时按各自迭代数走，平滑升级）
 _TOKEN_FILE_FMT = "token_hash_v1"
 _SERVER_START = time.time()  # 用于避免服务刚重启、平板还没首次上报时的误报
@@ -1393,6 +1417,8 @@ def get_holidays():
 
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
+        self._log_user = ""    # 审计日志：当前请求关联的账号
+        self._log_code = 0     # 审计日志：响应状态码
         SimpleHTTPRequestHandler.__init__(self, *args, directory=WEB_DIR, **kwargs)
 
     # ---------- 鉴权：设备口令或网页会话，返回 {"role": ...} 或 None ----------
@@ -1684,6 +1710,11 @@ class Handler(SimpleHTTPRequestHandler):
         return self._send_json({"ok": True, "message": m,
                                 "hint": "设备下次检查（约 5 分钟内）即可收到"})
 
+    def send_response(self, code, message=None):
+        # 所有响应（JSON 与静态文件）都经过这里，记录状态码供审计日志用
+        self._log_code = code
+        SimpleHTTPRequestHandler.send_response(self, code, message)
+
     def _send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -1699,10 +1730,14 @@ class Handler(SimpleHTTPRequestHandler):
         # 匿名健康检查：供监控/负载均衡探活，不暴露任何敏感信息
         if p == "/api/health":
             return self._send_json({"ok": True, "service": "clockdash", "ts": int(time.time())})
+        if not rate_allowed(self.client_address[0] if self.client_address else ""):
+            return self._send_json({"error": "请求过于频繁，请稍后再试"}, 429)
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
                  "/api/holidays", "/api/check", "/api/users", "/api/devices",
                  "/api/history", "/api/watchdog", "/api/backup"):
             a = self._auth()
+            if a and a.get("user"):
+                self._log_user = str(a["user"])[:32]
             if a and a.get("mode") == "expired":
                 return self._send_json({"error": "SUBSCRIPTION_EXPIRED",
                                         "hint": "订阅已到期，请续费后恢复同步"}, 402)
@@ -1803,11 +1838,15 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_POST(self):
         p = urlparse(self.path).path
+        if not rate_allowed(self.client_address[0] if self.client_address else ""):
+            return self._send_json({"error": "请求过于频繁，请稍后再试"}, 429)
         if p not in ("/api/todos", "/api/config", "/api/login", "/api/logout",
                      "/api/users", "/api/devices", "/api/watchdog",
                      "/api/watchdog/test", "/api/message", "/api/backup"):
             return self.send_error(404)
         a = self._auth()
+        if a and a.get("user"):
+            self._log_user = str(a["user"])[:32]
         if a and a.get("mode") == "expired":
             return self._send_json({"error": "SUBSCRIPTION_EXPIRED",
                                     "hint": "订阅已到期，请续费后恢复同步"}, 402)
@@ -2034,9 +2073,14 @@ class Handler(SimpleHTTPRequestHandler):
         SimpleHTTPRequestHandler.end_headers(self)
 
     def log_message(self, fmt, *args):
-        # 只记路径，不记 query —— 避免口令出现在 URL 里被写进日志
-        sys.stderr.write("%s %s %s\n" % (self.address_string(), self.command,
-                                         urlparse(self.path).path))
+        # 审计日志：时间戳 + IP + 账号 + 方法 + 路径 + 状态码。
+        # 只记路径，不记 query —— 避免 ?token= 口令写进日志。
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        user = getattr(self, "_log_user", "") or "-"
+        code = getattr(self, "_log_code", 0) or "-"
+        sys.stderr.write("%s [audit] ip=%s user=%s %s %s -> %s\n"
+                         % (ts, self.address_string(), user, self.command,
+                            urlparse(self.path).path, code))
 
 
 def main():
