@@ -489,8 +489,41 @@ function renderWeather() {
 }
 function fetchWeather() {
   api("/api/weather").then(function (w) {
-    if (w && w.ok !== false) { wxData = w; renderWeather(); }
+    if (w && w.ok !== false) { wxData = w; renderWeather(); extendWeek(); }
   }).catch(function () {});
+}
+/* 服务端补齐一周失败时（如服务器出网受限，高德固定只给 4 天），
+   浏览器直连 Open-Meteo 补齐后续日期，与安卓端方案 A 同构。
+   失败静默保留服务端原数据，绝不让主天气源被拖挂。 */
+function extendWeek() {
+  if (!wxData || !wxData.casts || wxData.casts.length >= 7) return;
+  if (!cfg || !cfg.lat || !cfg.lon) return;   // cfg 未到时 fetchConfig 完成后会再调一次
+  fetch("https://api.open-meteo.com/v1/forecast?latitude=" + cfg.lat
+      + "&longitude=" + cfg.lon
+      + "&daily=weathercode,temperature_2m_max,temperature_2m_min"
+      + "&timezone=auto&forecast_days=7")
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!wxData || !wxData.casts) return;
+      var d = j && j.daily;
+      if (!d || !d.time || !d.time.length) return;
+      var have = {};
+      for (var i = 0; i < wxData.casts.length; i++) have[wxData.casts[i].date] = 1;
+      for (var i = 0; i < d.time.length && wxData.casts.length < 7; i++) {
+        if (have[d.time[i]]) continue;
+        wxData.casts.push({
+          date: d.time[i],
+          cond: wmoText(d.weathercode ? d.weathercode[i] : null),
+          min: d.temperature_2m_min ? d.temperature_2m_min[i] : 0,
+          max: d.temperature_2m_max ? d.temperature_2m_max[i] : 0
+        });
+      }
+      wxData.casts.sort(function (a, b) {
+        return a.date < b.date ? -1 : (a.date > b.date ? 1 : 0);
+      });
+      renderWeather();
+    })
+    .catch(function () {});
 }
 
 /* ================= 配置 / 夜间 ================= */
@@ -509,7 +542,11 @@ function applyNight() {
   document.body.classList.toggle("nightclock", inNight && !!cfg.night_clock_only);
 }
 function fetchConfig() {
-  api("/api/config").then(function (c) { cfg = c || {}; applyNight(); }).catch(function () {});
+  api("/api/config").then(function (c) {
+    cfg = c || {};
+    applyNight();
+    extendWeek();   // 配置（经纬度）先于天气到达时，这里补一次
+  }).catch(function () {});
 }
 
 /* ================= 月历 ================= */
