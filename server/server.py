@@ -82,7 +82,9 @@ DEVICES_FILE = os.path.join(DATA_DIR, "devices.json")
 WATCH_CONFIG_FILE = os.path.join(DATA_DIR, "watchdog-config.json")
 WATCH_STATE_FILE = os.path.join(DATA_DIR, "watchdog-state.json")
 
-SESSION_TTL = 30 * 86400   # 网页登录会话有效期 30 天
+SESSION_TTL = 30 * 86400        # 网页登录会话绝对有效期 30 天
+SESSION_IDLE = 7 * 86400        # 空闲超时 7 天（长期不用需重新登录）
+SESSION_MAX_PER_USER = 5        # 每账号最多 5 个并发会话，超了踢最旧的
 # 登录失败限流：按「账号」和「来源 IP」两个维度分别计数，互不影响。
 # 旧版是全局单计数器——任何人输错 5 次就能把全体用户锁在外面（DoS）。
 LOGIN_MAX_ACCOUNT = 5      # 同一账号连续失败达此值 -> 锁定该账号
@@ -320,7 +322,14 @@ def load_sessions():
     expired = 0
     if isinstance(d, dict):
         for sid, s in (d.get("sessions") or {}).items():
-            if isinstance(s, dict) and now - float(s.get("ts", 0)) < SESSION_TTL:
+            if not isinstance(s, dict):
+                expired += 1
+                continue
+            ts = float(s.get("ts", 0))
+            # 空闲超时：用 last（最后活跃），旧会话无 last 时退回 ts。
+            # 两个条件都要满足：绝对有效期未到，且空闲未超时。
+            last = float(s.get("last", ts) or ts)
+            if now - ts < SESSION_TTL and now - last < SESSION_IDLE:
                 out[sid] = s
             else:
                 expired += 1
@@ -391,17 +400,26 @@ def get_session(sid):
     if not sid:
         return None
     sessions = load_sessions()
-    s = sessions.get(session_key(sid))
+    key = session_key(sid)
+    s = sessions.get(key)
+    migrated = False
+    if s is None:
+        s = sessions.get(sid)   # 旧明文 key 兼容
+        migrated = s is not None
     if s is not None:
-        return s
-    s = sessions.get(sid)
-    if s is not None:
-        # 旧明文会话升级为摘要 key
-        with _SAVE_LOCK:
-            cur = load_sessions()
-            if sid in cur and session_key(sid) not in cur:
-                cur[session_key(sid)] = cur.pop(sid)
-                save_sessions(cur)
+        now = time.time()
+        # 更新最后活跃时间，但 5 分钟内不重复写盘（避免每次请求都落盘）
+        need_write = migrated or (now - float(s.get("last", 0)) > 300)
+        if need_write:
+            with _SAVE_LOCK:
+                cur = load_sessions()
+                target = cur.get(key)
+                if migrated and target is None and sid in cur:
+                    target = cur.pop(sid)   # 旧明文 key 升级为摘要
+                if target is not None:
+                    target["last"] = now
+                    cur[session_key(sid)] = target
+                    save_sessions(cur)
         return s
     return None
 
@@ -409,9 +427,18 @@ def get_session(sid):
 def create_session(username, role):
     with _SAVE_LOCK:
         sessions = load_sessions()
+        now = time.time()
+        # 每账号并发会话上限：超了踢最旧的，防止口令泄露后会话无限累积
+        mine = [(k, float(v.get("last", v.get("ts", 0))))
+                for k, v in sessions.items() if v.get("user") == username]
+        if len(mine) >= SESSION_MAX_PER_USER:
+            mine.sort(key=lambda x: x[1])
+            for k, _ in mine[:len(mine) - SESSION_MAX_PER_USER + 1]:
+                sessions.pop(k, None)
         sid = secrets.token_hex(32)
         # 256bit 随机 sid 本身不可逆；落盘只存摘要，泄露文件无法冒用
-        sessions[session_key(sid)] = {"user": username, "role": role, "ts": time.time()}
+        sessions[session_key(sid)] = {"user": username, "role": role,
+                                       "ts": now, "last": now}
         save_sessions(sessions)
     return sid
 
