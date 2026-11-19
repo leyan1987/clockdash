@@ -317,10 +317,7 @@
     var opt = { method: method || "GET",
                 headers: { "Content-Type": "application/json", "X-Client": "web" } };
     var url = path;
-    if (auth.mode === "token") {
-      var sep = path.indexOf("?") >= 0 ? "&" : "?";
-      url += sep + "token=" + encodeURIComponent(auth.value);
-    } else if (auth.mode === "session") {
+    if (auth.mode === "session") {
       opt.headers["X-Session"] = auth.value;
     }
     if (body) opt.body = JSON.stringify(body);
@@ -639,16 +636,14 @@
   }
   function start() {
     $("noauth").hidden = true; $("app").hidden = false;
-    $("who").textContent = auth.mode === "session"
-      ? auth.user + (auth.role === "admin" ? " · 管理员" : " · 用户")
-      : "设备口令模式";
+    $("who").textContent = auth.user
+      + (auth.role === "admin" ? " · 管理员" : " · 用户");
     $("btnLogout").hidden = false;
     // 用户管理需要真正的管理员会话；设备口令模式虽然 role=admin，
     // 但服务端对用户/设备/备份接口一律 403，显示出来只会点不动还报错
-    $("secUsers").hidden = !(auth.mode === "session" && auth.role === "admin");
-    $("secDev").hidden = auth.mode !== "session"; // 设备口令模式本身绑定一台设备
-    // 在线看护面板仅管理员登录后台时可见；设备口令页面是给平板扫码配置用的
-    var showWatch = auth.mode === "session" && auth.role === "admin";
+    $("secUsers").hidden = auth.role !== "admin";
+    $("secDev").hidden = false;
+    var showWatch = auth.role === "admin";
     $("secWatch").hidden = !showWatch;
     $("secBackup").hidden = !showWatch;
     if (showWatch) {
@@ -657,38 +652,41 @@
       loadBackups();
     }
     $("manualUrl").textContent = location.origin;
-    $("manualToken").textContent = auth.mode === "token"
-      ? auth.value : "（管理员可在上方“设备”区块查看所选设备的口令）";
+    $("manualToken").textContent = "（管理员可在上方“设备”区块查看所选设备的口令）";
     api("/api/ping").then(function () { $("conn").innerHTML = '<span class="ok">已连接</span>'; })
       .catch(function (e) { $("conn").innerHTML = '<span class="err">连接失败：' + esc(e.message) + "</span>"; });
-    if (auth.mode === "session") {
-      loadDevices().then(loadData);
-    } else {
-      loadData();
-    }
-    if (auth.mode === "session" && auth.role === "admin") renderUsers();
+    loadDevices().then(loadData);
+    if (auth.role === "admin") renderUsers();
   }
   function showLogin() {
     $("noauth").hidden = false; $("app").hidden = true;
   }
   function init() {
+    /* 服务器版后台统一走账号密码登录：扫码链接里的 token 不再作为登录凭据，
+       只保留 URL 参数供误用的旧书签兼容（会被忽略）。
+       注意：单机版的配对页是 PairActivity.pageHtml() 另一套页面，用 PIN，不受此处影响。 */
     var urlTok = qs.get("token");
     if (urlTok) {
-      auth = { mode: "token", value: urlTok, role: "admin" };
-      localStorage.setItem("cd_token", urlTok);
-      start(); return;
+      // 清掉历史遗留的 token 凭据，避免它继续绕过登录
+      localStorage.removeItem("cd_token");
+      // URL 里的 token 不外泄到页面显示，仅提示需要先登录
+      history.replaceState(null, "", location.pathname);
     }
     var sess = localStorage.getItem("cd_session");
     if (sess && localStorage.getItem("cd_user")) {
       auth = { mode: "session", value: sess,
                user: localStorage.getItem("cd_user"),
                role: localStorage.getItem("cd_role") || "user" };
-      start(); return;
-    }
-    var savedTok = localStorage.getItem("cd_token");
-    if (savedTok) {
-      auth = { mode: "token", value: savedTok, role: "admin" };
-      start(); return;
+      // session 可能已过期（服务端 30 天有效 / 改密踢旧会话）：先验再进，
+      // 否则会进到后台后每个接口都 401、满屏报错
+      api("/api/ping").then(function () { start(); })
+        .catch(function () {
+          localStorage.removeItem("cd_session");
+          localStorage.removeItem("cd_user");
+          localStorage.removeItem("cd_role");
+          showLogin();
+        });
+      return;
     }
     showLogin();
   }
@@ -711,14 +709,11 @@
   });
   $("liPass").addEventListener("keydown", function (e) { if (e.key === "Enter") $("liGo").click(); });
   $("btnLogout").addEventListener("click", function () {
-    if (auth.mode === "session") {
-      try { api("/api/logout", "POST", {}); } catch (e) {}
-      localStorage.removeItem("cd_session");
-      localStorage.removeItem("cd_user");
-      localStorage.removeItem("cd_role");
-    } else {
-      localStorage.removeItem("cd_token");
-    }
+    try { api("/api/logout", "POST", {}); } catch (e) {}
+    localStorage.removeItem("cd_session");
+    localStorage.removeItem("cd_user");
+    localStorage.removeItem("cd_role");
+    localStorage.removeItem("cd_token");   // 清掉历史遗留
     location.reload();
   });
 
