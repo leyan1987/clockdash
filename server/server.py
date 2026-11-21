@@ -140,6 +140,10 @@ def new_global_token():
 
 def ensure_data():
     os.makedirs(DATA_DIR, exist_ok=True)
+    try:
+        os.chmod(DATA_DIR, 0o700)   # 含全部凭据的目录，仅属主可进
+    except Exception:
+        pass
     if not os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             f.write(new_global_token())
@@ -334,14 +338,15 @@ def session_key(sid):
 
 
 def load_sessions():
+    """纯读过滤：过期会话只在内存中剔除，不在此处写盘。
+    读路径（get_session）不持锁，落盘必须由持锁方完成，否则会与
+    drop_session/create_session 交错，把已登出的会话"复活"回去。"""
     d = load_json(SESSIONS_FILE, {"sessions": {}})
     now = time.time()
     out = {}
-    expired = 0
     if isinstance(d, dict):
         for sid, s in (d.get("sessions") or {}).items():
             if not isinstance(s, dict):
-                expired += 1
                 continue
             ts = float(s.get("ts", 0))
             # 空闲超时：用 last（最后活跃），旧会话无 last 时退回 ts。
@@ -349,11 +354,6 @@ def load_sessions():
             last = float(s.get("last", ts) or ts)
             if now - ts < SESSION_TTL and now - last < SESSION_IDLE:
                 out[sid] = s
-            else:
-                expired += 1
-    # 顺手清理过期会话：过期条目不再有利用价值，留着只是信息泄露面
-    if expired:
-        atomic_write(SESSIONS_FILE, json.dumps({"sessions": out}))
     return out
 
 
@@ -422,14 +422,24 @@ def pw_index_for(pw):
     return hashlib.sha256(pw.encode("utf-8")).hexdigest()
 
 
+_PW_MISS_TTL = 300          # 未索引账号扫描未命中的负缓存时长（秒）
+_PW_MISS = {}               # sha256(口令) -> (最近未命中时间, 未索引账号数)
+
+
 def _backfill_pw_index(username, pw):
     """验证成功后补 pw_index，此后该账号的每次请求只需 1 次 PBKDF2。
-    旧账号的 PBKDF2 哈希无法反推口令，只能验证成功时顺手补齐。"""
+    旧账号的 PBKDF2 哈希无法反推口令，只能验证成功时顺手补齐。
+    回填前在锁内用当前哈希重新验证：若验证后口令已被改密（新哈希+新索引
+    落盘），旧口令的回填绝不能覆盖新索引，否则该账号设备认证永久失效。"""
     idx = pw_index_for(pw)
     with _SAVE_LOCK:
         cur = load_users()
         for x in cur["users"]:
-            if x.get("username") == username and x.get("pw_index") != idx:
+            if x.get("username") == username:
+                if x.get("pw_index") == idx:
+                    break
+                if not verify_password(x, pw):
+                    break   # 口令已在验证窗口内被改：放弃回填
                 x["pw_index"] = idx
                 save_users(cur)
                 break
@@ -462,11 +472,20 @@ def account_by_password(tok):
             if verify_password(u, tok):
                 return u, u.get("config_key") or account_config_key(u["username"])
             return None, None
-    # 旧账号（尚无 pw_index）：逐个验证，命中即补索引（每账号一生只发生一次）
+    # 旧账号（尚无 pw_index）：逐个验证，命中即补索引（每账号一生只发生一次）。
+    # 未命中结果做短时负缓存：垃圾令牌对同一批未索引账号反复全量 PBKDF2 毫无意义。
+    now = time.time()
+    unindexed = sum(1 for u in users if not u.get("pw_index"))
+    last = _PW_MISS.get(digest)
+    if last is not None and now - last[0] < _PW_MISS_TTL and last[1] == unindexed:
+        return None, None
     for u in users:
         if not u.get("pw_index") and verify_password(u, tok):
             _backfill_pw_index(u.get("username", ""), tok)
             return u, u.get("config_key") or account_config_key(u["username"])
+    _PW_MISS[digest] = (now, unindexed)
+    if len(_PW_MISS) > 1000:   # 防内存无限增长
+        _PW_MISS.clear()
     return None, None
 
 
@@ -705,6 +724,12 @@ def atomic_write(path, text):
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
         os.replace(tmp, path)
+        # data/ 下有口令、用户哈希、会话摘要、设备令牌摘要：统一 0600，
+        # 防共享主机上其他本机用户读取（Windows 上 chmod 为尽力而为）
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
     finally:
         if os.path.exists(tmp):
             try:
@@ -1047,6 +1072,9 @@ def _parse_hhmm(s, label="时间"):
 def validate_todos(doc):
     if not isinstance(doc, dict) or not isinstance(doc.get("todos"), list):
         raise ValueError("数据缺少 todos 数组")
+    if len(doc["todos"]) > 500:
+        # 条数无上限时，1MB 请求体可塞约 1.8 万条规则，历史展开会把整服拖垮
+        raise ValueError("待办条数过多（上限 500 条）")
     out = []
     for i, t in enumerate(doc["todos"]):
         if not isinstance(t, dict) or not str(t.get("title", "")).strip():
@@ -1653,7 +1681,7 @@ class Handler(SimpleHTTPRequestHandler):
         return None
 
     def _handle_login(self, doc):
-        username = str(doc.get("username", "")).strip()
+        username = str(doc.get("username", "")).strip()[:64]   # 截断：防 1MB 用户名撑爆失败计数器
         password = str(doc.get("password", ""))
         ip = self.client_address[0] if self.client_address else ""
         # 限流在校验口令之前判断：被锁的账号/IP 直接拒绝，不做昂贵的 PBKDF2
@@ -1773,13 +1801,24 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json({"error": "不能删除最后一个管理员"}, 400)
             del users["users"][idx]
             drop_user_sessions(username)
-            # 订阅账号的配置/待办/历史与看护状态一并清掉，不留磁盘残留
+            # 订阅账号的配置/待办/历史与看护状态一并清掉，不留磁盘残留；
+            # todo_rev 与天气缓存也清：否则同名账号重建会继承旧版本号，设备不拉新数据
             ck = target.get("config_key") or account_config_key(username)
             for f in (todos_path(ck), config_path(ck), history_path(ck)):
                 try:
                     os.remove(f)
                 except OSError:
                     pass
+            try:
+                with _SAVE_LOCK:
+                    st = load_json(STATE_FILE, {"todo_rev": 0})
+                    if isinstance(st.get("todo_rev"), dict) and ck in st["todo_rev"]:
+                        st["todo_rev"].pop(ck, None)
+                        atomic_write(STATE_FILE, json.dumps(st))
+            except Exception:
+                pass
+            with _WX_LOCK:
+                _WX_CACHE.pop(ck, None)
             st = load_watch_state()
             wchanged = False
             for k in ("devices", "alerts", "messages"):
@@ -1929,14 +1968,22 @@ class Handler(SimpleHTTPRequestHandler):
             fp = os.path.join(APPS_DIR, name)
             if not os.path.isfile(fp):
                 return self.send_error(404)
-            with open(fp, "rb") as fh:
-                body = fh.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.android.package-archive")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                size = os.path.getsize(fp)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/vnd.android.package-archive")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                # 分块流式发送：整包读内存会把并发下载的缓冲钉死到超时，小内存 VPS 可能 OOM
+                with open(fp, "rb") as fh:
+                    while True:
+                        chunk = fh.read(65536)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except Exception:
+                pass
             return
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
                  "/api/holidays", "/api/check", "/api/users", "/api/devices",
@@ -1971,11 +2018,15 @@ class Handler(SimpleHTTPRequestHandler):
             if p == "/api/devices":
                 devs = all_devices()
                 if a.get("role") != "admin":
-                    # 普通用户只能看到自己绑定的那一台设备（不含口令）
+                    # 普通用户只能看到自己的设备（订阅账号=自己的 config_key 虚拟设备）
                     me = next((u for u in load_users()["users"]
                                if u.get("username") == a.get("user")), None)
-                    mydev = (me.get("device", "default") if me else "default")
+                    mydev = ((me.get("config_key") if me else None)
+                             or (me.get("device") if me else None) or "default")
                     mine = [d for d in devs if d["id"] == mydev]
+                    if not mine and me:
+                        # 订阅账号的虚拟设备不在 devices.json：按 config_key 生成视图
+                        mine = [{"id": mydev, "name": me.get("username", "")}]
                     return self._send_json({"ok": True,
                                             "devices": [{"id": d["id"], "name": d.get("name", "")}
                                                         for d in mine]})
@@ -2086,8 +2137,14 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json({"error": "仅管理员账号可访问该接口"}, 403)
         try:
             n = int(self.headers.get("Content-Length", 0) or 0)
-            if n > 1024 * 1024:
-                return self._send_json({"error": "请求体过大"}, 413)
+        except (TypeError, ValueError):
+            n = 0
+        if n < 0:
+            # 负数会让 rfile.read(n) 阻塞到 EOF，钉死工作线程（绕过 Slowloris 防护）
+            return self._send_json({"error": "请求头不合法"}, 400)
+        if n > 1024 * 1024:
+            return self._send_json({"error": "请求体过大"}, 413)
+        try:
             doc = json.loads(self.rfile.read(n).decode("utf-8")) if n else {}
             if not isinstance(doc, dict):
                 doc = {}
@@ -2334,7 +2391,15 @@ class ClockDashHTTPServer(ThreadingHTTPServer):
             finally:
                 _REQ_SEM.release()
         t = threading.Thread(target=run, daemon=True)
-        t.start()
+        try:
+            t.start()
+        except Exception:
+            # 线程启动失败（资源不足）：必须归还名额，否则容量单调递减直至失能
+            _REQ_SEM.release()
+            try:
+                request.close()
+            except Exception:
+                pass
 
 
 _REQ_SEM = threading.BoundedSemaphore(64)   # 最多 64 个并发请求线程

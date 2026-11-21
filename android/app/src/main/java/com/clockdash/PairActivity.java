@@ -308,7 +308,11 @@ public class PairActivity extends Activity {
                 } else if ("GET".equals(method) && path.startsWith("/todos")) {
                     doTodosGet(s, qpin);
                 } else {
-                    respond(s, pageHtml(mContext, qpin));
+                    // 扫码链接自带 ?pin=，视为可信：回显完整配置。局域网裸访问
+                    // （无 PIN/错误 PIN）只能看到脱敏页——服务器口令与高德 Key
+                    // 是订阅凭据，不能让同一 WiFi 下任何设备白拿。
+                    boolean trusted = mPin != null && mPin.equals(qpin);
+                    respond(s, pageHtml(mContext, qpin, trusted));
                 }
                 try {
                     s.close();
@@ -499,18 +503,19 @@ public class PairActivity extends Activity {
         }
 
         /**
-         * 配置页必须把已保存的配置全部预填回去：否则用户打开页面点一次
-         * 「保存基本设置」，空输入框会把本机已有的高德 Key/adcode 清空，
-         * 天气随即从一周退回三天（实测踩到）。
+         * 配置页预填：trusted（扫码自带 PIN）时回显全部已存配置，否则敏感字段
+         * （服务器口令/高德 Key）脱敏为空并提示——保存时空值=保持原值，不会误清。
+         * 预填本身也是防呆：可信用户点一次「保存基本设置」不会把已有配置清空。
          */
-        private static String pageHtml(Context c, String pin) {
+        private static String pageHtml(Context c, String pin, boolean trusted) {
             String url = Prefs.get(c, Prefs.K_URL, "");
-            String token = Prefs.get(c, Prefs.K_TOKEN, "");
+            String token = trusted ? Prefs.get(c, Prefs.K_TOKEN, "") : "";
             String city = Prefs.get(c, Prefs.K_CITY, "");
             String lat = Prefs.get(c, Prefs.K_LAT, "");
             String lon = Prefs.get(c, Prefs.K_LON, "");
-            String key = Prefs.get(c, Prefs.K_AMAP_KEY, "");
+            String key = trusted ? Prefs.get(c, Prefs.K_AMAP_KEY, "") : "";
             String adcode = Prefs.get(c, Prefs.K_AMAP_ADCODE, "");
+            String tokenHint = trusted ? "" : "（已隐藏：重新输入，或留空保持平板现有值）";
             return "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
                     + "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
                     + "<title>配置时钟看板平板</title><style>"
@@ -535,7 +540,7 @@ public class PairActivity extends Activity {
                     + "<input name=\"pin\" required maxlength=\"4\" inputmode=\"numeric\" value=\"" + pin + "\">"
                     + "<label>服务器地址（单机版留空）</label>"
                     + "<input name=\"url\" placeholder=\"http://123.45.67.89:8765\" value=\"" + attr(url) + "\">"
-                    + "<label>口令（购买服务器版时才填）</label>"
+                    + "<label>口令（购买服务器版时才填）" + tokenHint + "</label>"
                     + "<input name=\"token\" placeholder=\"例如 6587195B\" value=\"" + attr(token) + "\">"
                     + "<label>城市名（选填）</label><input name=\"city\" placeholder=\"兰山区\" value=\"" + attr(city) + "\">"
                     + "<div class=\"two\"><div><label>纬度</label>"

@@ -265,21 +265,20 @@ function lunarLabel(y, m, d) {
   var l = solarToLunar(y, m, d);
   if (!l) return "";
   var lm = l.m, leap = l.leap;
-  if (leap) lm = -lm;
   if (!leap) {
     var f = lunarFestival(l.y, lm, l.d);
     if (f) return f;
   }
-  if (l.d === 1) return (leap ? "闰" : "") + MONTH_NAMES[lm - 1];
+  // 闰月用负月份数表示：取月名必须取绝对值，否则显示"闰undefined"（2028 闰五月触发）
+  if (l.d === 1) return (leap ? "闰" : "") + MONTH_NAMES[Math.abs(lm) - 1];
   return chinaDay(l.d);
 }
 function lunarFull(y, m, d) {
   var l = solarToLunar(y, m, d);
   if (!l) return "";
   var lm = l.m, leap = l.leap;
-  if (leap) lm = -lm;
   var f = leap ? null : lunarFestival(l.y, lm, l.d);
-  var monthText = (leap ? "闰" : "") + MONTH_NAMES[lm - 1];
+  var monthText = (leap ? "闰" : "") + MONTH_NAMES[Math.abs(lm) - 1];
   var dayText = chinaDay(l.d);
   if (f) return "农历" + f;
   if (l.d === 1) return "农历" + monthText;
@@ -430,7 +429,19 @@ function api(path) {
         if (g) { g.style.display = "flex"; }
         var err = new Error("SUBSCRIPTION_EXPIRED"); err.code = 402; throw err;
       }
+      if (r.status === 401 || r.status === 403) {
+        // 口令已被改密/删除：旧 token 永远 401 且被各处空 catch 吞掉，
+        // 看板会永远停在空数据上没有重入口。清掉旧凭据重新弹出账号门页。
+        localStorage.removeItem("board_token");
+        TOKEN = "";
+        var gate = document.getElementById("tokenGate");
+        if (gate) gate.style.display = "flex";
+        throw new Error("NEED_LOGIN");
+      }
       if (!r.ok) throw new Error(j.error || r.status);
+      // 续费成功后自动撤掉到期遮罩（无需手动刷新）
+      var eg = document.getElementById("expiredGate");
+      if (eg && eg.style.display === "flex") eg.style.display = "none";
       return j;
     });
   });
@@ -544,8 +555,12 @@ function extendWeek() {
 /* ================= 配置 / 夜间 ================= */
 function minutesOf(hhmm, def) {
   var p = String(hhmm || "").split(":");
-  var v = (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0);
-  return isNaN(v) ? def : v;
+  var h = parseInt(p[0], 10), m = parseInt(p[1], 10);
+  // 字段缺失/畸形时必须回退默认值：v 永不为 NaN，原来的 isNaN 判断是死代码，
+  // 新账号没有 night_start 配置时夜间模式会被静默关成 00:00-00:00
+  if (isNaN(h) || isNaN(m)) return def;
+  var v = h * 60 + m;
+  return (v >= 0 && v < 1440) ? v : def;
 }
 function applyNight() {
   var now = new Date();
@@ -783,13 +798,16 @@ function rebuildUpcoming() {
   rows.sort(function (a, b) { return a.fireAt - b.fireAt; });
   upcoming = rows;
 }
+var snoozeQueue = [];   // 贪睡条目单独存放：upcoming 每分钟/每次同步都整体重建，放里面 60 秒就被丢弃
 function checkDue() {
   var now = Date.now();
-  for (var i = 0; i < upcoming.length; i++) {
-    var u = upcoming[i];
+  var sources = upcoming.concat(snoozeQueue);
+  for (var i = 0; i < sources.length; i++) {
+    var u = sources[i];
     if (u.fireAt <= now && !notifKeys[u.key]) {
       notifKeys[u.key] = 1;
       saveNotified();
+      snoozeQueue = snoozeQueue.filter(function (s) { return s.key !== u.key; });
       showReminder(u);
       break;
     }
@@ -822,7 +840,8 @@ function hideReminder() {
 }
 $("rOk").addEventListener("click", hideReminder);
 $("rSnooze").addEventListener("click", function () {
-  upcoming.push({ occ: Date.now() + 10 * 60000, fireAt: Date.now() + 10 * 60000,
+  // 放入独立贪睡队列：upcoming 是每分钟重建的派生数组，放进去 60 秒即被丢弃
+  snoozeQueue.push({ occ: Date.now() + 10 * 60000, fireAt: Date.now() + 10 * 60000,
                   title: $("rTitle").textContent, key: "snooze:" + Date.now(), sound: true });
   hideReminder();
 });
@@ -971,9 +990,11 @@ function shiftMonth(delta) {
 }
 
 /* ================= 启动 ================= */
+var gateBusy = false;
 $("gateGo").addEventListener("click", function () {
   var t = $("gateToken").value.trim();
-  if (!t) return;
+  if (!t || gateBusy) return;
+  gateBusy = true;   // 防重入：验证请求期间重复点击会 boot 两次，轮询定时器翻倍
   $("gateErr").textContent = "正在验证…";
   // 先用这个口令探一次接口：验证凭据有效、也顺便发现订阅是否已到期。
   // 直接 boot 的话，过期口令会进到看板后每个接口都 402、满屏报错。
@@ -992,7 +1013,8 @@ $("gateGo").addEventListener("click", function () {
       $("tokenGate").style.display = "none";
       boot();
     })
-    .catch(function () { $("gateErr").textContent = "无法连接服务器，请检查地址与网络"; });
+    .catch(function () { $("gateErr").textContent = "无法连接服务器，请检查地址与网络"; })
+    .then(function () { gateBusy = false; });
 });
 var expBtn = document.getElementById("expiredRefresh");
 if (expBtn) expBtn.addEventListener("click", function () { location.reload(); });

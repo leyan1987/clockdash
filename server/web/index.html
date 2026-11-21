@@ -392,7 +392,24 @@
     editing = true; $("todoForm").style.display = "block";
     $("fId").value = t.id; $("fTitle").value = t.title;
     $("fDate").value = t.date; $("fTime").value = t.time;
-    $("fRemind").value = String(t.remind); $("fRepeat").value = t.repeat || "none";
+    // 固定选项的 select 可能装不下其它端存的值（如 remind=15/90）：
+    // 赋不上值时 select 变空串，保存时 parseInt("")=NaN 把提醒静默清掉。
+    // 兜底方案：动态补一个选项保住原值。
+    $("fRemind").value = String(t.remind);
+    if ($("fRemind").value !== String(t.remind) && $("fRemind").selectedIndex < 0) {
+      var opt = document.createElement("option");
+      opt.value = String(t.remind);
+      opt.textContent = t.remind + "（自定义）";
+      $("fRemind").appendChild(opt);
+    }
+    $("fRemind").value = String(t.remind);
+    $("fRepeat").value = t.repeat || "none";
+    if ($("fRepeat").selectedIndex < 0) {
+      var ro = document.createElement("option");
+      ro.value = t.repeat; ro.textContent = t.repeat + "（自定义）";
+      $("fRepeat").appendChild(ro);
+      $("fRepeat").value = t.repeat;
+    }
     showConds($("fRepeat").value);
     var wds = $("fWeekdays").querySelectorAll("input");
     for (var k = 0; k < wds.length; k++) wds[k].checked = !!(t.weekdays && t.weekdays.indexOf(+wds[k].value) >= 0);
@@ -407,8 +424,15 @@
     editing = false; $("todoForm").style.display = "none";
     $("fId").value = ""; $("fTitle").value = ""; $("fEnd").value = "";
   }
+  function localToday() {
+    // 本地时区日期：toISOString 是 UTC，东八区每天 0-8 点会得到"昨天"，
+    // 不重复型待办会落到过去、在看板上永不出现
+    var d = new Date();
+    return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2)
+         + "-" + ("0" + d.getDate()).slice(-2);
+  }
   $("btnAdd").addEventListener("click", function () {
-    fillForm({ id: "t" + Date.now(), title: "", date: new Date().toISOString().slice(0, 10),
+    fillForm({ id: "t" + Date.now(), title: "", date: localToday(),
                time: "09:00", remind: 10, repeat: "none", interval: 1 });
   });
   $("btnFormCancel").addEventListener("click", clearForm);
@@ -580,6 +604,7 @@
   $("devSel").addEventListener("change", function () {
     curDev = this.value; localStorage.setItem("cd_dev", curDev);
     setDirty(false);
+    clearForm();   // 换设备必须清表单：残留的旧设备 id/内容会被"确定"插进新设备列表
     loadData();
     loadDevices();
   });
@@ -624,6 +649,9 @@
       $("pTodosMin").value = c.todos_min || 60; $("pWxMin").value = c.weather_min || 60;
       $("pAmapKey").value = c.amap_key || "";
       adcode = c.adcode || ""; setHintAdcode(adcode ? adcode + " ✓" : "");
+      // 先重置再回填：从有坐标的设备切到未配置设备时残留旧坐标，
+      // 推送会把 A 设备的位置写进 B 设备（天气定位错城市）
+      geo = { lat: null, lon: null }; setHintGeo(null, null);
       if (c.lat && c.lon) { geo.lat = c.lat; geo.lon = c.lon; setHintGeo(c.lat, c.lon); }
     }).catch(function () {});
   }
@@ -864,12 +892,19 @@
   }
   function renderWatch(j) {
     var c = j.config || {};
-    $("wEnabled").checked = !!c.enabled;
-    $("wAfter").value = c.offline_after_min || 15;
-    $("wRepeat").value = c.repeat_min || 0;
-    $("wRecover").checked = c.notify_recover !== false;
-    $("wType").value = c.webhook_type || "wecom";
-    $("wUrl").value = c.webhook_url || "";
+    // 30 秒定时回填会打断正在编辑的管理员（编辑超 30 秒被旧值覆盖，回退值
+    // 还可能被误保存）。任一看护表单元素持有焦点时跳过表单回填，设备列表照常刷新。
+    var ids = ["wEnabled", "wAfter", "wRepeat", "wRecover", "wType", "wUrl"];
+    var ae = document.activeElement;
+    var skipForm = !!(ae && ids.indexOf(ae.id) >= 0);
+    if (!skipForm) {
+      $("wEnabled").checked = !!c.enabled;
+      $("wAfter").value = c.offline_after_min || 15;
+      $("wRepeat").value = c.repeat_min || 0;
+      $("wRecover").checked = c.notify_recover !== false;
+      $("wType").value = c.webhook_type || "wecom";
+      $("wUrl").value = c.webhook_url || "";
+    }
 
     var html = "", devs = j.devices || [];
     for (var i = 0; i < devs.length; i++) {

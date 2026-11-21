@@ -87,6 +87,8 @@ public final class AppUpdate {
         }
     }
 
+    private static volatile boolean sDownloading = false;
+
     /** 更新处理：已就绪只补一次安装提示；否则后台下载后提示。upd 为 null 时忽略 */
     public static void handleUpdate(final Context c, final JSONObject upd) {
         if (upd == null) return;
@@ -98,11 +100,17 @@ public final class AppUpdate {
                 if (Prefs.getInt(c, Prefs.K_APP_NOTIFIED, 0) != code) notifyReady(c, upd);
                 return;
             }
+            if (sDownloading) return;   // 在途互斥：慢网络下下载会超过一个轮询周期
+            sDownloading = true;
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    String path = download(c, upd);
-                    if (path != null) notifyReady(c, upd);
+                    try {
+                        String path = download(c, upd);
+                        if (path != null) notifyReady(c, upd);
+                    } finally {
+                        sDownloading = false;
+                    }
                 }
             }, "clockdash-ota").start();
         } catch (Throwable ignored) {
@@ -132,7 +140,7 @@ public final class AppUpdate {
             if (tok.length() > 0) conn.setRequestProperty("X-Token", tok);
             if (conn.getResponseCode() != 200) return null;
             InputStream in = conn.getInputStream();
-            File tmp = new File(dir, dst.getName() + ".part");
+            File tmp = new File(dir, dst.getName() + "." + Thread.currentThread().getId() + ".part");
             MessageDigest md = MessageDigest.getInstance("MD5");
             OutputStream out = new FileOutputStream(tmp);
             byte[] buf = new byte[8192];

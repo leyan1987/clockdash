@@ -134,6 +134,10 @@ public final class Store {
                 String rep = o.optString("repeat", "none");
                 if (title.length() == 0 || title.length() > 200) return false;
                 if (!validDate(date) || !validTime(time)) return false;
+                // end/window_from/window_to 提供时必须同样合法（与服务端对齐）
+                if (o.has("end") && !validDate(o.optString("end", ""))) return false;
+                if (o.has("window_from") && !validTime(o.optString("window_from", ""))) return false;
+                if (o.has("window_to") && !validTime(o.optString("window_to", ""))) return false;
                 if (!"none".equals(rep) && !"hourly".equals(rep) && !"daily".equals(rep)
                         && !"weekly".equals(rep) && !"monthly".equals(rep) && !"yearly".equals(rep)) {
                     return false;
@@ -367,8 +371,11 @@ public final class Store {
     /** 判断 /api/check 响应里版本号是否有变化（resp 为 null 时返回 false） */
     public static boolean hasChanges(Context c, JSONObject resp) {
         if (resp == null) return false;
-        return resp.optInt("todo_rev", 0) != Prefs.getInt(c, Prefs.K_TODO_REV, 0)
-                || resp.optInt("config_rev", 0) != Prefs.getInt(c, Prefs.K_REV, 0);
+        // 只认"服务器版本更大"：本地编辑保存时会 +1 本地 rev，若用 != 判定，
+        // 本地刚保存必然被下一次轮询回滚（服务器根本没改）。服务器恢复旧备份
+        // 导致 rev 变小的极端情况，由管理员在后台重存一次待办（rev+1）解决。
+        return resp.optInt("todo_rev", 0) > Prefs.getInt(c, Prefs.K_TODO_REV, 0)
+                || resp.optInt("config_rev", 0) > Prefs.getInt(c, Prefs.K_REV, 0);
     }
 
     /** 兼容旧调用：true 表示服务器有待办/配置变更 */
@@ -401,6 +408,7 @@ public final class Store {
      */
     public static boolean healStaleData(Context c, long maxAgeMs) {
         if (serverBase(c) == null) return false;
+        if (subscriptionExpired(c)) return false;   // 到期停同步：与闹钟同步入口同一约定
         long now = System.currentTimeMillis();
         boolean todoStale = maxAgeMs <= 0 || now - todosCacheTime(c) > maxAgeMs;
         boolean wxStale = maxAgeMs <= 0 || now - weatherCacheTime(c) > maxAgeMs;
@@ -528,17 +536,18 @@ public final class Store {
     /** 原子写：先写临时文件再改名，老平板掉电/进程被杀不会留下写了一半的缓存
      *  （缓存损坏会让 parseTodos 返回空，待办全部消失、提醒被清空） */
     public static void writePrivate(Context c, String name, String content) {
+        // 并发写者（界面同步/闹钟同步/自愈）可能同时写同一缓存：
+        // 临时名必须唯一，交错写同一 .tmp 会产生半截 JSON，rename 失败的
+        // 非原子直写回退更是把损坏放大——宁可放弃本次写入（下轮重试）。
+        String tmpName = name + "." + Thread.currentThread().getId() + ".tmp";
         try {
-            FileOutputStream out = c.openFileOutput(name + ".tmp", Context.MODE_PRIVATE);
+            FileOutputStream out = c.openFileOutput(tmpName, Context.MODE_PRIVATE);
             out.write(content.getBytes("UTF-8"));
             out.close();
-            File tmp = new File(c.getFilesDir(), name + ".tmp");
+            File tmp = new File(c.getFilesDir(), tmpName);
             File dst = new File(c.getFilesDir(), name);
             if (!tmp.renameTo(dst)) {
-                // 极少数文件系统 rename 失败：退回直接写
-                FileOutputStream out2 = c.openFileOutput(name, Context.MODE_PRIVATE);
-                out2.write(content.getBytes("UTF-8"));
-                out2.close();
+                tmp.delete();
             }
         } catch (Exception ignored) {
         }

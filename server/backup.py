@@ -83,8 +83,10 @@ def create(data_dir, out_dir, keep):
                       "sha256": _sha256(os.path.join(data_dir, n))} for n in names},
     }
     dest = os.path.join(out_dir, "%s%s.tar.gz" % (PREFIX, _stamp()))
-    # 先写临时文件再改名，避免中断留下半个压缩包
-    tmp = dest + ".tmp"
+    # 先写临时文件再改名，避免中断留下半个压缩包。
+    # 临时名加随机后缀：CLI/cron 备份不持服务器锁，与网页备份同毫秒创建时
+    # 固定 .tmp 名会互相覆盖（同 atomic_write 踩过的坑）
+    tmp = "%s.%s.tmp" % (dest, os.getpid())
     try:
         with tarfile.open(tmp, "w:gz") as tf:
             mbytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
@@ -141,12 +143,24 @@ def list_backups(out_dir):
         print("  %-42s %8d 字节" % (n, size))
 
 
+def _is_unsafe_name(name):
+    """路径安全统一判定：穿越、类 Unix 绝对路径、Windows 盘符绝对路径（备份包
+    可能来自他人，必须按最严格标准拒绝）"""
+    name = name.replace("\\", "/")
+    if name.startswith("/") or name.startswith("./") or ".." in name.split("/"):
+        return True
+    if os.path.isabs(name):                    # POSIX 视角的绝对路径
+        return True
+    if len(name) >= 2 and name[1] == ":" and name[0].isalpha():  # C:/ 盘符
+        return True
+    return False
+
+
 def _safe_members(tf):
     """校验压缩包成员，拒绝路径穿越/绝对路径/特殊文件"""
     members = tf.getmembers()
     for m in members:
-        name = m.name.replace("\\", "/")
-        if name.startswith("/") or ".." in name.split("/") or name.startswith("./"):
+        if _is_unsafe_name(m.name):
             raise RuntimeError("备份包含不安全路径，拒绝恢复: %s" % m.name)
         if not (m.isfile() or m.isdir()):
             raise RuntimeError("备份包含非普通文件，拒绝恢复: %s" % m.name)
@@ -174,7 +188,7 @@ def restore(backup_path, data_dir, out_dir, force, dry_run):
         tmpdir = tempfile.mkdtemp(prefix="clockdash-restore-")
         try:
             for name, meta in expected.items():
-                if name.replace("\\", "/") != name or ".." in name or name.startswith("/"):
+                if _is_unsafe_name(name):
                     raise RuntimeError("manifest 文件名不安全: %s" % name)
                 src = next((x for x in members if x.name == name), None)
                 if src is None:

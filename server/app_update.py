@@ -153,11 +153,14 @@ def cmd_publish(a):
         else:
             sys.exit("文件名不含版本号（需形如 xxx-44.apk），请用 --code 指定 versionCode")
     os.makedirs(APPS_DIR, exist_ok=True)
-    # 统一命名为 <flavor>-<code>.apk：同版本重发直接覆盖
+    # 统一命名为 <flavor>-<code>.apk：同版本重发直接覆盖。
+    # 原子落盘：客户端实时读盘下载，发布瞬间不能让它读到写一半的文件
     dst_name = "%s-%d.apk" % (a.flavor, a.code)
     dst = os.path.join(APPS_DIR, dst_name)
-    shutil.copyfile(src, dst)
-    md5 = md5_of(dst)
+    tmp = "%s.%s.tmp" % (dst, os.getpid())
+    shutil.copyfile(src, tmp)
+    md5 = md5_of(tmp)
+    os.replace(tmp, dst)
     m = load_manifest()
     old = m.get(a.flavor) or {}
     m[a.flavor] = {"code": int(a.code), "name": str(a.name or a.code),

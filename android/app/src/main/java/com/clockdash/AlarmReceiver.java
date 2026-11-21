@@ -212,7 +212,9 @@ public class AlarmReceiver extends BroadcastReceiver {
         if (sLock == null) {
             PowerManager pm = (PowerManager) c.getSystemService(Context.POWER_SERVICE);
             sLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "clockdash:sync");
-            sLock.setReferenceCounted(false);
+            // 引用计数必须开启：CHECK 与 SYNC 两闹钟同刻触发时各持一次，
+            // 非计数模式任一线程先完成就把整体锁放掉，另一线程裸奔被 Doze 休眠
+            sLock.setReferenceCounted(true);
         }
         // acquire(long) 是 API 17（Android 4.2）才有的，4.0.3 上会 NoSuchMethodError
         if (Build.VERSION.SDK_INT >= 17) {

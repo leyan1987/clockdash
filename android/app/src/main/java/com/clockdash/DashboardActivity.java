@@ -194,7 +194,14 @@ public class DashboardActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
                 // 开机自启动时直接盖过滑动锁屏（对安全锁无效）
                 | WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
-                | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD);
+                | WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+                // 熄屏状态下断电重启：没有 TURN_SCREEN_ON 时 activity 被拉起但屏幕不亮，
+                // 看板作为"断电自恢复的常亮屏"这是核心场景
+                | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        if (Build.VERSION.SDK_INT >= 27) {
+            setTurnScreenOn(true);   // P+ 上窗口标志在部分机型不生效，用 API 27 的正式接口兜底
+            setShowWhenLocked(true);
+        }
 
         tvClock = (TextView) findViewById(R.id.tvClock);
         tvDate = (TextView) findViewById(R.id.tvDate);
@@ -842,6 +849,7 @@ public class DashboardActivity extends Activity {
             int idx = i + 1; // 跳过今天：实况已在上方单独显示
             boolean filled = false;
             if (i < slots && idx < mWx.dayDate.length
+                    && mWx.dayDate[idx] != null          // 畸形条目留 null：判空，别让一格坏掉整个天气区
                     && mWx.dayDate[idx].length() == 10) {
                 try {
                     SimpleDateFormat df = new SimpleDateFormat("yyyy-MM-dd", Locale.US);

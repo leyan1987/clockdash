@@ -198,10 +198,15 @@ public class TodoEditActivity extends Activity {
         String wd = text(v, R.id.etWeekdays);
         t.weekdays = parseWeekdays(wd);
         String wf = text(v, R.id.etWindowFrom);
-        t.windowFrom = wf.length() > 0 ? wf : null;
         String wt = text(v, R.id.etWindowTo);
+        // 严格校验与主字段同一标准：非法结束日期会让 Recur 严格解析失败，
+        // "结束日期"静默失效（循环提醒永不过期）；非法时间窗被 clamp 成 0 点
+        if (wf.length() > 0 && !Store.validTime(wf)) return null;
+        if (wt.length() > 0 && !Store.validTime(wt)) return null;
+        t.windowFrom = wf.length() > 0 ? wf : null;
         t.windowTo = wt.length() > 0 ? wt : null;
         String end = text(v, R.id.etEnd);
+        if (end.length() > 0 && !Store.validDate(end)) return null;
         t.end = end.length() == 10 ? end : null;
         return t;
     }

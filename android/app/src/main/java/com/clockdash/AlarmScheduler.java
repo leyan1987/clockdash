@@ -190,17 +190,21 @@ public final class AlarmScheduler {
             JSONArray arr = new JSONArray(s);
             for (int i = 0; i < arr.length(); i++) {
                 int code = arr.optInt(i, -1);
-                if (code < 0) continue;
                 Intent intent = new Intent(c, AlarmReceiver.class);
                 intent.setAction(ACTION_FIRE);
-                PendingIntent pi = PendingIntent.getBroadcast(c, code, intent, PendingIntent.FLAG_NO_CREATE);
+                // 必须带 piFlags()：targetSdk 31 下 NO_CREATE 不豁免 IMMUTABLE 要求，
+                // 缺了会在 Android 12+ 抛 IllegalArgumentException，重排链条整体静默失效。
+                // 负 requestCode 同样合法（reqCode 由 title.hashCode 异或而来，约一半为负），
+                // 不能跳过，否则这些待办删除/改期后旧闹钟永远残留误响。
+                PendingIntent pi = PendingIntent.getBroadcast(c, code, intent,
+                        piFlags() | PendingIntent.FLAG_NO_CREATE);
                 if (pi != null) am.cancel(pi);
             }
         } catch (Exception ignored) {
         }
     }
 
-    /** 稍后再提醒 */
+    /** 稍后再提醒。闹钟登记进 K_SCHEDULED：待办删除/改期重排时能一并取消，否则贪睡闹钟残留 */
     public static void snooze(Context c, String title, long delayMs, boolean sound) {
         long at = System.currentTimeMillis() + delayMs;
         Intent intent = new Intent(c, AlarmReceiver.class);
@@ -209,8 +213,15 @@ public final class AlarmScheduler {
         intent.putExtra("occ", at);
         intent.putExtra("key", "snooze:" + at);
         intent.putExtra("sound", sound);
-        PendingIntent pi = PendingIntent.getBroadcast(c, reqCode(at, title), intent, piFlags());
+        int code = reqCode(at, title);
+        PendingIntent pi = PendingIntent.getBroadcast(c, code, intent, piFlags());
         setExactCompat(c, am(c), at, pi);
+        try {
+            JSONArray codes = new JSONArray(Prefs.get(c, Prefs.K_SCHEDULED, "[]"));
+            codes.put(code);
+            Prefs.put(c, Prefs.K_SCHEDULED, codes.toString());
+        } catch (Exception ignored) {
+        }
     }
 
     private static long nextMidnight() {

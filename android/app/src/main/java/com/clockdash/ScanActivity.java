@@ -32,11 +32,14 @@ public class ScanActivity extends Activity implements SurfaceHolder.Callback {
         public void onPreviewFrame(final byte[] data, final Camera camera) {
             if (mBusy || mDone) return;
             mBusy = true;
+            // HAL 在回调返回后立即复用 data buffer：不拷贝的话解码线程读到脏帧，
+            // 表现为识别率下降、偶发全部失败
+            final byte[] frame = data.clone();
             final int w = mWidth, h = mHeight;
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    final String text = QrCodec.decodeNv21(data, w, h);
+                    final String text = QrCodec.decodeNv21(frame, w, h);
                     mHandler.post(new Runnable() {
                         @Override
                         public void run() {
