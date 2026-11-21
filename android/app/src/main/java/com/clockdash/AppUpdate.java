@@ -207,21 +207,41 @@ public final class AppUpdate {
     private static File updateDir(Context c) {
         // 老设备（Android 4.x）安装器以独立进程经文件路径读取安装包：
         // 应用私有目录（/data/data 或 Android/data）对安装器不可读，
-        // 读了就报"解析包时出现问题"。必须放公共下载目录（世界可读）。
-        // modern（5.0+）走 PackageInstaller，由本应用流式拷贝进会话，
-        // 不跨进程读文件，应用私有目录即可。
+        // 读了就报"解析包时出现问题"。必须落到真实存在且可写的公共卷。
+        // 老 ROM 常有多存储卷（sdcard 槽 + 内置 flash），标准 API 可能指向
+        // 没插卡的槽——按"规范下载目录 → /sdcard 自建目录 → 应用外部目录"
+        // 级联选择，逐个验证真实可写。
         if (Build.VERSION.SDK_INT < 21) {
             File d = Environment.getExternalStoragePublicDirectory(
                     Environment.DIRECTORY_DOWNLOADS);
-            if (d != null && (d.isDirectory() || d.mkdirs()) && d.canWrite()) return d;
+            if (usable(d)) return d;
+            File sd = Environment.getExternalStorageDirectory();
+            if (sd != null && "mounted".equals(Environment.getExternalStorageState())) {
+                d = new File(sd, "ClockDash");
+                if (usable(d)) return d;
+            }
         }
         File d = c.getExternalFilesDir("update");
-        if (d == null || !(d.isDirectory() && d.canWrite())) {
+        if (d == null || !usable(d)) {
             File alt = c.getDir("update", 0);
             if (!alt.exists()) alt.mkdirs();
             d = alt;
         }
         return d;
+    }
+
+    /** 目录真实可用：存在（或可创建）且当前进程确实可写 */
+    private static boolean usable(File d) {
+        if (d == null) return false;
+        try {
+            if (!d.isDirectory() && !d.mkdirs()) return false;
+            File probe = new File(d, ".w" + System.currentTimeMillis());
+            if (!probe.createNewFile()) return false;
+            probe.delete();
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static void markReady(Context c, int code, File f) {
