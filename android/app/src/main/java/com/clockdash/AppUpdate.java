@@ -9,6 +9,7 @@ import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 
 import org.json.JSONObject;
 
@@ -107,12 +108,37 @@ public final class AppUpdate {
                 public void run() {
                     try {
                         String path = download(c, upd);
-                        if (path != null) notifyReady(c, upd);
+                        if (path != null) {
+                            notifyReady(c, upd);
+                        } else {
+                            // 下载/校验失败不能静默：用户会以为"没反应"，其实下轮 check 会自动重试
+                            notifyFailure(c);
+                        }
                     } finally {
                         sDownloading = false;
                     }
                 }
             }, "clockdash-ota").start();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 下载失败提示（静音渠道）：失败后下一轮轮询自动重试，无需用户操作 */
+    private static void notifyFailure(Context c) {
+        try {
+            AlarmScheduler.ensureChannel(c);
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(c, AlarmScheduler.CHANNEL_ID)
+                    : new Notification.Builder(c);
+            b.setSmallIcon(android.R.drawable.stat_notify_error);
+            b.setContentTitle("看板更新下载失败");
+            b.setContentText("网络或校验未通过，稍后将自动重试");
+            b.setAutoCancel(true);
+            Notification n = Build.VERSION.SDK_INT >= 16 ? b.build() : b.getNotification();
+            if (n != null) {
+                ((NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE))
+                        .notify(2003, n);
+            }
         } catch (Throwable ignored) {
         }
     }
@@ -126,6 +152,13 @@ public final class AppUpdate {
         int code = upd.optInt("code", 0);
         File dir = updateDir(c);
         File dst = new File(dir, "ClockDash-" + flavor(c) + "-" + code + ".apk");
+        // 公共下载目录会累积旧版本包：安装成功不再需要，下载新版时顺手清掉
+        File[] old = dir.listFiles();
+        if (old != null) {
+            for (File f : old) {
+                if (f.getName().startsWith("ClockDash-") && !f.equals(dst)) f.delete();
+            }
+        }
         // 断点续传不做（300KB 一次下完）；已就绪且校验匹配则免重复下载
         if (dst.isFile() && md5.length() > 0 && md5Matches(dst, md5)) {
             markReady(c, code, dst);
@@ -172,9 +205,22 @@ public final class AppUpdate {
     }
 
     private static File updateDir(Context c) {
+        // 老设备（Android 4.x）安装器以独立进程经文件路径读取安装包：
+        // 应用私有目录（/data/data 或 Android/data）对安装器不可读，
+        // 读了就报"解析包时出现问题"。必须放公共下载目录（世界可读）。
+        // modern（5.0+）走 PackageInstaller，由本应用流式拷贝进会话，
+        // 不跨进程读文件，应用私有目录即可。
+        if (Build.VERSION.SDK_INT < 21) {
+            File d = Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS);
+            if (d != null && (d.isDirectory() || d.mkdirs()) && d.canWrite()) return d;
+        }
         File d = c.getExternalFilesDir("update");
-        if (d == null) d = c.getDir("update", 0);
-        if (!d.exists()) d.mkdirs();
+        if (d == null || !(d.isDirectory() && d.canWrite())) {
+            File alt = c.getDir("update", 0);
+            if (!alt.exists()) alt.mkdirs();
+            d = alt;
+        }
         return d;
     }
 
@@ -294,7 +340,18 @@ public final class AppUpdate {
                 }
             }
         }
-        // Android 4.x：系统安装器直接打开（targetSdk 15 允许 file:// Uri）
+        // Android 4.x：系统安装器直接打开（targetSdk 15 允许 file:// Uri）。
+        // 兜底尽力授权：万一文件落在私有目录（公共下载目录不可用时），
+        // 让安装器进程至少能读到文件本体与父目录
+        try {
+            f.setReadable(true, false);
+            File parent = f.getParentFile();
+            if (parent != null) {
+                parent.setReadable(true, false);
+                parent.setExecutable(true, false);
+            }
+        } catch (Throwable ignored) {
+        }
         try {
             Intent i = new Intent(Intent.ACTION_VIEW);
             i.setDataAndType(Uri.fromFile(f), "application/vnd.android.package-archive");

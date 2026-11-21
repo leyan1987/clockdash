@@ -15,6 +15,9 @@
     <!-- OTA 自更新：Android 8+ 需要用户授予"安装未知应用"（首次安装时系统弹引导）；
          老系统上此权限声明被忽略，走"未知来源"开关 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- OTA：老设备（<5.0）安装包需落到公共下载目录（安装器跨进程读取） -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="20" />
 
     <uses-feature
         android:name="android.hardware.camera"
