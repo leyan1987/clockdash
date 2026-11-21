@@ -21,3 +21,8 @@ server/_*.json
 __pycache__/
 .DS_Store
 Thumbs.db
+server/apps/
+server/backups/
+server/data/
+server/server-log.txt
+build-v*.log
