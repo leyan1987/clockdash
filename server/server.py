@@ -370,6 +370,34 @@ def account_config_key(username):
     return "u_" + hashlib.sha256(username.encode("utf-8")).hexdigest()[:10]
 
 
+def subscription_keys():
+    """所有账号的 config_key -> 用户名 映射。
+    订阅账号的平板以 config_key 为 devid 上报心跳，看护与管理接口据此覆盖它们。"""
+    out = {}
+    for u in load_users()["users"]:
+        un = u.get("username", "")
+        ck = u.get("config_key") or account_config_key(un)
+        if ck:
+            out.setdefault(ck, un)
+    return out
+
+
+def watched_devices():
+    """看护覆盖的全部设备：devices.json 实体设备 + 订阅账号的虚拟设备
+    （config_key 作 devid，心跳由 touch_device 记录）。返回 [(devid, 显示名)]。"""
+    out = []
+    seen = set()
+    for d in all_devices():
+        devid = d.get("id")
+        if devid and devid not in seen:
+            seen.add(devid)
+            out.append((devid, d.get("name") or devid))
+    for ck, uname in sorted(subscription_keys().items()):
+        if ck not in seen:
+            out.append((ck, "订阅·" + uname))
+    return out
+
+
 def account_expired(user):
     """账号是否过期。expires 为空/缺失/非法 => 永不过期（兼容旧账号与内置 admin）。
     格式 YYYY-MM-DD，到期当天仍可用，次日失效。"""
@@ -384,20 +412,56 @@ def account_expired(user):
         return False
 
 
+def pw_index_for(pw):
+    """口令的确定性摘要（sha256），仅用于查找定位候选账号。
+    落盘防破解仍由 PBKDF2 承担；与设备 group_key 同一强度与用途。"""
+    return hashlib.sha256(pw.encode("utf-8")).hexdigest()
+
+
+def _backfill_pw_index(username, pw):
+    """验证成功后补 pw_index，此后该账号的每次请求只需 1 次 PBKDF2。
+    旧账号的 PBKDF2 哈希无法反推口令，只能验证成功时顺手补齐。"""
+    idx = pw_index_for(pw)
+    with _SAVE_LOCK:
+        cur = load_users()
+        for x in cur["users"]:
+            if x.get("username") == username and x.get("pw_index") != idx:
+                x["pw_index"] = idx
+                save_users(cur)
+                break
+
+
 def account_by_password(tok):
     """把平板填的账号口令解析为账号，返回 (user, config_key)。
-    与网页登录共用同一口令——平板填的就是购买账号时拿到的那个口令。"""
+    与网页登录共用同一口令——平板填的就是购买账号时拿到的那个口令。
+
+    性能关键：先按 pw_index（sha256 摘要）定位候选再确认，避免逐账号全量
+    PBKDF2（每个 ~200ms，账号一多每个请求要秒级 CPU）。「用户名:口令」
+    形式直接按用户名取人，天然 O(1)。"""
     if not tok:
         return None, None
-    for u in load_users()["users"]:
-        # 平板填的可能是「用户名:口令」或纯口令。纯口令时逐个比对（账号数很少）。
-        cand = tok
-        if ":" in tok:
-            un, pw = tok.split(":", 1)
-            if un != u.get("username"):
-                continue
-            cand = pw
-        if verify_password(u, cand):
+    users = load_users()["users"]
+    if ":" in tok:
+        un, pw = tok.split(":", 1)
+        for u in users:
+            if u.get("username") == un:
+                if not verify_password(u, pw):
+                    return None, None   # 用户名对、口令错：直接失败
+                if not u.get("pw_index"):   # 已索引的不再重复落盘
+                    _backfill_pw_index(un, pw)
+                return u, u.get("config_key") or account_config_key(un)
+        # 用户名不存在：继续按纯口令试（兼容把整串当口令的极端用法）
+    digest = pw_index_for(tok)
+    for u in users:
+        idx = u.get("pw_index")
+        if idx and hmac.compare_digest(str(idx), digest):
+            if verify_password(u, tok):
+                return u, u.get("config_key") or account_config_key(u["username"])
+            return None, None
+    # 旧账号（尚无 pw_index）：逐个验证，命中即补索引（每账号一生只发生一次）
+    for u in users:
+        if not u.get("pw_index") and verify_password(u, tok):
+            _backfill_pw_index(u.get("username", ""), tok)
             return u, u.get("config_key") or account_config_key(u["username"])
     return None, None
 
@@ -505,33 +569,60 @@ def device_by_id(devid):
     return None
 
 
+def _upgrade_plaintext_devices(tok):
+    """把仍存明文的设备一次性升级为哈希落盘。同令牌的设备共用同一份
+    token_hash 与 group_key（旧实现逐台各算一次盐，同组哈希不一致，
+    哈希化后无法互相确认——但 group_key 相同即可整组识别）。"""
+    h = hash_token(tok)
+    gk = group_key_for(tok)
+    with _SAVE_LOCK:
+        cur = load_devices()
+        changed = False
+        for x in cur["devices"]:
+            if "token_hash" not in x and "token" in x \
+                    and hmac.compare_digest(str(x.get("token") or ""), tok):
+                x["token_hash"] = h
+                x["group_key"] = gk
+                x.pop("token", None)
+                changed = True
+        if changed:
+            save_devices(cur)
+
+
 def device_by_token(tok):
-    """按令牌找设备。兼容旧明文与新哈希，命中旧明文时静默升级为哈希落盘。"""
+    """按令牌找设备。兼容旧明文与新哈希，命中旧明文时静默升级为哈希落盘。
+
+    性能关键：新格式的 group_key = sha256(令牌)，同令牌设备共享同一摘要与
+    哈希。先按摘要定位候选组，只做一次 PBKDF2 确认——避免逐设备全量
+    PBKDF2（每台 ~200ms，设备一多每个请求要秒级 CPU）。"""
     if not tok:
         return None
     data = load_devices()
     if not data:
         return None
+    digest = group_key_for(tok)
+    shared = None
     for d in data["devices"]:
-        stored = d.get("token_hash") if "token_hash" in d else d.get("token")
-        if verify_stored_token(stored, tok):
-            if "token_hash" not in d:
-                # 旧明文 → 哈希；哈希用同一令牌，分组关系不变
-                with _SAVE_LOCK:
-                    cur = load_devices()
-                    # 凡是用这个明文令牌的设备一次性全部升级：只升命中那台会让
-                    # 同口令组里一半用 group_key、一半用明文 token，分组断裂。
-                    for x in cur["devices"]:
-                        if "token_hash" not in x and verify_stored_token(x.get("token"), tok):
-                            x["token_hash"] = hash_token(tok)
-                            x["group_key"] = group_key_for(tok)  # 同令牌 → 同组键
-                            x.pop("token", None)
-                    save_devices(cur)
+        if d.get("group_key") == digest and "token_hash" in d:
+            if verify_stored_token(d["token_hash"], tok):
+                shared = d["token_hash"]
+                break
+    if shared is not None:
+        # 同口令多台设备共享同一份哈希，语义上等价；取列表顺序第一台（与旧行为一致）
+        for x in data["devices"]:
+            if x.get("group_key") == digest and x.get("token_hash") == shared:
+                return x
+        return None
+    # 旧明文设备：明文比对极廉价，直接扫；命中即整组升级为哈希
+    for d in data["devices"]:
+        if "token_hash" not in d and "token" in d \
+                and hmac.compare_digest(str(d.get("token") or ""), tok):
+            _upgrade_plaintext_devices(tok)
             return d
-    # 兼容：旧全局口令视为默认设备
+    # 兼容：旧全局口令视为默认设备（不落任何哈希，避免无谓的 PBKDF2 开销）
     try:
         if hmac.compare_digest(read_token(), tok):
-            return {"id": "default", "name": "默认平板", "token_hash": hash_token(tok)}
+            return {"id": "default", "name": "默认平板"}
     except Exception:
         pass
     return None
@@ -772,9 +863,7 @@ def watchdog_tick():
     with _SAVE_LOCK:
         s = load_watch_state()
         changed = False
-        for d in all_devices():
-            dev_id = d.get("id")
-            name = d.get("name") or dev_id
+        for dev_id, name in watched_devices():
             last = float(s["devices"].get(dev_id, {}).get("last_seen", 0) or 0)
             al = s["alerts"].setdefault(dev_id, {})
             # 服务刚重启且这台设备从未上报过：给它一个完整阈值窗口，别一启动就误报
@@ -840,15 +929,14 @@ def watchdog_status():
     now = time.time()
     s = load_watch_state()
     out = []
-    for d in all_devices():
-        dev_id = d.get("id")
+    for dev_id, dev_name in watched_devices():
         info = s["devices"].get(dev_id, {})
         al = s["alerts"].get(dev_id, {})
         last = float(info.get("last_seen", 0) or 0)
         offline = last <= 0 or (now - last) > c["offline_after_min"] * 60
         out.append({
             "id": dev_id,
-            "name": d.get("name") or dev_id,
+            "name": dev_name,
             "last_seen": last,
             "last_api": info.get("last_api", ""),
             "last_ip": info.get("last_ip", ""),
@@ -1530,6 +1618,9 @@ class Handler(SimpleHTTPRequestHandler):
         devid = (qs.get("devid") or [""])[0]
         if device_by_id(devid):
             return devid
+        # 订阅账号的虚拟设备（config_key）：管理员凭 devid 可直接查看/留言
+        if devid in subscription_keys():
+            return devid
         return None
 
     def _handle_login(self, doc):
@@ -1553,6 +1644,7 @@ class Handler(SimpleHTTPRequestHandler):
         if account_expired(u):
             return self._send_json({"error": "订阅已到期，请联系服务商续费",
                                     "code": "SUBSCRIPTION_EXPIRED"}, 402)
+        _backfill_pw_index(username, password)   # 旧账号首次登录补查找索引
         login_success(username, ip)
         role = u.get("role", "user")
         sid = create_session(username, role)
@@ -1591,6 +1683,7 @@ class Handler(SimpleHTTPRequestHandler):
                 except ValueError:
                     return self._send_json({"error": "到期日期格式应为 YYYY-MM-DD"}, 400)
             entry = {"username": username, "role": role, **u,
+                     "pw_index": pw_index_for(password),
                      "config_key": account_config_key(username), "expires": exp}
             if role == "user":
                 # 订阅制：账号口令即设备凭据，不再要求绑定某一台设备。
@@ -1638,6 +1731,7 @@ class Handler(SimpleHTTPRequestHandler):
             if len(password) < 6:
                 return self._send_json({"error": "口令至少 6 位"}, 400)
             users["users"][idx].update(hash_password(password))
+            users["users"][idx]["pw_index"] = pw_index_for(password)
             drop_user_sessions(username)  # 改密后踢掉旧会话
         elif act == "del":
             if idx < 0:
@@ -1650,6 +1744,21 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json({"error": "不能删除最后一个管理员"}, 400)
             del users["users"][idx]
             drop_user_sessions(username)
+            # 订阅账号的配置/待办/历史与看护状态一并清掉，不留磁盘残留
+            ck = target.get("config_key") or account_config_key(username)
+            for f in (todos_path(ck), config_path(ck), history_path(ck)):
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+            st = load_watch_state()
+            wchanged = False
+            for k in ("devices", "alerts", "messages"):
+                if ck in st.get(k, {}):
+                    st[k].pop(ck, None)
+                    wchanged = True
+            if wchanged:
+                save_watch_state(st)
         else:
             return self._send_json({"error": "未知操作"}, 400)
         save_users(users)
@@ -1836,7 +1945,12 @@ class Handler(SimpleHTTPRequestHandler):
                     # 设备口令只看得到自己这台：多设备部署时口令互不可见
                     mine = [d for d in devs if d["id"] == a.get("dev")]
                     return self._send_json({"ok": True, "devices": [dev_view(d) for d in mine]})
-                return self._send_json({"ok": True, "devices": [dev_view(d) for d in devs]})
+                view = [dev_view(d) for d in devs]
+                # 订阅账号的虚拟设备也列出（后台可选中来查看/留言/推送）
+                for ck, uname in sorted(subscription_keys().items()):
+                    if not any(v["id"] == ck for v in view):
+                        view.append({"id": ck, "name": "订阅·" + uname, "has_token": False})
+                return self._send_json({"ok": True, "devices": view})
             if p == "/api/backup":
                 # 服务器级：仅管理员会话，设备口令/普通用户一律拒绝
                 if a.get("mode") != "session" or a.get("role") != "admin":
