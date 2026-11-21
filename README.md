@@ -38,7 +38,7 @@
 - **历史待办**：按时间范围/关键词查询已过期的发生记录；删除待办时规则自动归档，历史仍可查
 - **夜间模式**：定时把屏幕亮度降到 6%，可选"只显示时钟"
 - **离线兜底**：断网时时钟/日历/夜间模式照常工作，数据用最后缓存
-- **在线看护**：服务器记录每台设备最后通讯时间，超过阈值（默认 15 分钟）经企业微信/钉钉/飞书/自定义 Webhook 推送失联告警，恢复时再通知一次；网页后台可看在线状态、告警历史，也可给平板留言（下次轮询带回）。平板端无需改动、不额外耗电
+- **在线看护**：服务器记录每台设备（含订阅账号的全部设备）最后通讯时间，超过阈值（默认 15 分钟）经企业微信/钉钉/飞书/自定义 Webhook 推送失联告警，恢复时再通知一次；网页后台可看在线状态、告警历史，也可给平板留言（下次轮询带回）。平板端无需改动、不额外耗电
 
 ## 在线版 vs 单机版
 
@@ -53,6 +53,8 @@
 | 备份 | ✅ 网页一键 + 定时 | 数据都在平板本地 |
 
 单机版配置：平板设置页服务器地址留空，填本机高德 Key + 行政区码即可独立运行。
+
+> 面向最终用户的**安装与日常使用手册**（含两种版本的详细区别、一步步图文说明与常见问题）见 [docs/用户手册.md](docs/用户手册.md)。
 
 ## 适用硬件
 
@@ -71,11 +73,14 @@
 VPS / NAS / 电脑：server.py（Python 标准库，单文件）
  ├─ /api/health    匿名健康检查（监控探活）
  ├─ /api/login     账号登录（网页后台，签发会话）
- ├─ /api/todos     待办规则
+ ├─ /api/todos     待办规则（GET 拉取 / POST 保存并归档被删规则）
  ├─ /api/config    显示设置推送（夜间模式/城市/刷新间隔）
  ├─ /api/weather   天气代理：──HTTPS──> 高德(有Key) → Open-Meteo 兜底
  ├─ /api/holidays  节假日代理：──HTTPS──> holiday-cn，24h 缓存
  ├─ /api/check     版本检查（5 分钟；兼作心跳 + 服务器留言捎带）
+ ├─ /api/history   历史待办（已过期发生记录 + 被删规则归档）
+ ├─ /api/devices   设备库（管理员含订阅账号的虚拟设备）
+ ├─ /api/message   管理员给平板留言（下次轮询带回）
  ├─ /api/watchdog  在线看护：状态/配置/告警历史
  ├─ /api/backup    备份与恢复（仅管理员）
  └─ /api/users     订阅账号管理（仅管理员）
@@ -107,11 +112,14 @@ VPS / NAS / 电脑：server.py（Python 标准库，单文件）
 │   ├── clockdash-backup.service / .timer   定时备份
 │   └── data/               运行时生成，不入库：口令、用户库、订阅、
 │                           按账号隔离的 todos_<key>.json / config_<key>.json
+├── docs/
+│   └── 用户手册.md         面向普通用户的安装与使用手册（单机版/在线版）
 ├── tests/
-│   ├── LunarTest.java  农历锚点测试（40 项）
-│   ├── RecurTest.java  循环引擎测试（26 项）
-│   ├── audit.py        静态引用审计
-│   └── make_icon.py    应用图标生成器
+│   ├── LunarTest.java      农历锚点测试（70 项）
+│   ├── RecurTest.java      循环引擎测试（31 项）
+│   ├── recur_port_test.py  Recur 算法 Python 侧语义验证（26 项）
+│   ├── audit.py            静态引用审计
+│   └── make_icon.py        应用图标生成器
 ├── build-apk.cmd       Windows 一键打包（镜像到 ASCII 路径构建）
 └── dist/               构建产物：ClockDash-legacy.apk / ClockDash-modern.apk
 ```
@@ -233,15 +241,16 @@ modern 版含现代系统适配：通知渠道（8.0+）、PendingIntent 不可�
 
 | 测试 | 覆盖 | 运行方式 | 状态 |
 |---|---|---|---|
-| `tests/LunarTest.java` | 农历数据表+算法：2000–2031 春节逐年、中秋/端午/除夕/闰月 | `javac -encoding UTF-8 -d out android/.../Lunar.java tests/LunarTest.java && java -cp out com.clockdash.LunarTest` | ✅ 40/40 |
-| `tests/RecurTest.java` | 循环引擎：六种重复、间隔、星期、月末跳过、闰年、结束日期、上限 | `javac -encoding UTF-8 -d out android/.../{Recur,Todo}.java tests/RecurTest.java && java -cp out RecurTest` | ✅ 26/26 |
+| `tests/LunarTest.java` | 农历数据表+算法：2000–2031 春节逐年、中秋/端午/除夕/闰月、日名 1–30 全覆盖 | `javac -encoding UTF-8 -d out android/.../Lunar.java tests/LunarTest.java && java -cp out com.clockdash.LunarTest` | ✅ 70/70 |
+| `tests/RecurTest.java` | 循环引擎：六种重复、间隔、星期、月末跳过、闰年、结束日期、上限 | `javac -encoding UTF-8 -d out android/.../{Recur,Todo}.java tests/RecurTest.java && java -cp out RecurTest` | ✅ 31/31 |
+| `tests/recur_port_test.py` | 服务端 Recur 移植与安卓端语义一致性 | `python tests/recur_port_test.py` | ✅ 26/26 |
 | `tests/audit.py` | 静态审计：Java↔资源↔Manifest 交叉引用 | `python tests/audit.py` | ✅ 无缺失 |
 
 ## 安全与运维加固
 
 服务器因老安卓限制走明文 HTTP，但已做多层防护：
 
-- **鉴权**：设备/账号口令与网页会话双通道；口令与会话均哈希落盘（PBKDF2 60 万次 / SHA256 摘要），旧格式首次使用静默升级
+- **鉴权**：设备/账号口令与网页会话双通道；口令与会话均哈希落盘（PBKDF2 60 万次 / SHA256 摘要），旧格式首次使用静默升级。请求鉴权按 SHA256 摘要索引定位候选后再做一次 PBKDF2 确认（实测 10 设备 + 10 账号规模下每个请求 ~170ms，与规模无关），未命中请求零 PBKDF2，账号规模化不拖垮服务
 - **限流**：登录失败按账号+IP 双维度锁定；接口按 IP 120 次/分钟限流，异常请求 429
 - **会话**：30 天绝对有效期 + 7 天空闲超时 + 每账号最多 5 个并发会话
 - **审计日志**：时间戳 + IP + 账号 + 方法 + 路径 + 状态码，不记录 URL 中的口令
