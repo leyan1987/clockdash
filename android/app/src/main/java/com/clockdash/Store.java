@@ -328,13 +328,16 @@ public final class Store {
     // ---------- 同步兜底（闹钟与界面心跳共用） ----------
 
     /**
-     * 轻量版本号检查：返回 /api/check 的完整响应（含服务器留言 notice），
-     * 不可达或响应异常返回 null。必须在后台线程调用。
+     * 轻量版本号检查：返回 /api/check 的完整响应（含服务器留言 notice、
+     * OTA 捎带 app 字段），不可达或响应异常返回 null。必须在后台线程调用。
+     * 附带 flavor/code：服务端据此在响应里捎带 OTA 新版本信息（老服务器忽略）。
      */
     public static JSONObject checkOnce(Context c) {
         String base = serverBase(c);
         if (base == null) return null;
-        HttpUtil.Result r = HttpUtil.getResult(base + "/api/check",
+        HttpUtil.Result r = HttpUtil.getResult(base + "/api/check?flavor="
+                        + c.getString(R.string.app_flavor)
+                        + "&code=" + c.getResources().getInteger(R.integer.app_code),
                 Prefs.get(c, Prefs.K_TOKEN, ""), 8000);
         if (r.expired()) {
             // 订阅到期：服务端返回 402。写标记让界面显示续费提示、停止同步；

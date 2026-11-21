@@ -2056,6 +2056,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json({"ok": True})
         if p == "/":
             p = "/index.html"
+        if p.startswith("/apps/"):
+            # OTA 目录只放行上面的 .apk 下载路由：manifest 与目录列表不对外
+            return self.send_error(404)
         SimpleHTTPRequestHandler.do_GET(self)
 
     def do_POST(self):

@@ -75,7 +75,7 @@ public class AlarmReceiver extends BroadcastReceiver {
                         }
                         // OTA：服务器有新版本时捎带下载，就绪后通知栏提示安装
                         try {
-                            AppUpdate.onCheck(app, resp);
+                            AppUpdate.onCheckResponse(app, resp);
                         } catch (Throwable ignored) {
                         }
                         if (Store.hasChanges(app, resp)) {

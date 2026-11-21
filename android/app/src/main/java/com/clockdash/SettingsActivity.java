@@ -344,7 +344,7 @@ public class SettingsActivity extends Activity {
                 if (upd != null && !ready) {
                     // 顺手触发下载，完成后通知栏提示
                     try {
-                        AppUpdate.onCheck(app, upd);
+                        AppUpdate.handleUpdate(app, upd);
                     } catch (Throwable ignored) {
                     }
                 }

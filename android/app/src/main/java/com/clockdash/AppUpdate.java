@@ -79,11 +79,18 @@ public final class AppUpdate {
         }
     }
 
-    /** /api/check 的捎带入口：发现新版本就下载，就绪后提示安装 */
-    public static void onCheck(final Context c, JSONObject resp) {
+    /** /api/check 响应入口（轮询捎带通道）：解析出 app 字段后交给 handleUpdate */
+    public static void onCheckResponse(final Context c, JSONObject resp) {
         try {
-            final JSONObject upd = parseUpdate(resp, versionCode(c));
-            if (upd == null) return;
+            handleUpdate(c, parseUpdate(resp, versionCode(c)));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 更新处理：已就绪只补一次安装提示；否则后台下载后提示。upd 为 null 时忽略 */
+    public static void handleUpdate(final Context c, final JSONObject upd) {
+        if (upd == null) return;
+        try {
             final int code = upd.optInt("code", 0);
             if (Prefs.getInt(c, Prefs.K_APP_DL_CODE, 0) >= code
                     && new File(Prefs.get(c, Prefs.K_APP_FILE, "")).isFile()) {
