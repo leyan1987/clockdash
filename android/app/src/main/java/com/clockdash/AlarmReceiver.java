@@ -73,6 +73,11 @@ public class AlarmReceiver extends BroadcastReceiver {
                                 showNotice(app, nid, ntext);
                             }
                         }
+                        // OTA：服务器有新版本时捎带下载，就绪后通知栏提示安装
+                        try {
+                            AppUpdate.onCheck(app, resp);
+                        } catch (Throwable ignored) {
+                        }
                         if (Store.hasChanges(app, resp)) {
                             // 版本有变化：全量同步（含天气，配置可能换了城市/位置）
                             Store.healStaleData(app, 0);

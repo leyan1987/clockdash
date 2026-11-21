@@ -19,6 +19,8 @@
   GET  /api/weather  天气（服务器代理高德/Open-Meteo，带缓存，需口令/会话）
   GET  /api/holidays 法定节假日/调休（代理 holiday-cn，每日缓存，需口令/会话）
   GET  /api/check    数据版本号检查（轻量推送轮询，需口令/会话）
+  GET  /api/app/check  客户端 OTA 版本检查（?flavor=legacy&code=43，需口令/会话）
+  GET  /apps/<文件>.apk  安卓安装包下载（OTA，公开路由，签名校验兜底防篡改）
                      附带 server_time 与服务器主动下发的 notice 留言
   GET  /api/history  历史待办查询（已过期发生时刻+已删除规则归档，需口令/会话）
   GET  /api/watchdog 设备在线状态 + 看护配置 + 告警历史（仅管理员）
@@ -64,6 +66,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE, "web")
 DATA_DIR = os.path.join(BASE, "data")
 BACKUP_DIR = os.path.join(BASE, "backups")
+APPS_DIR = os.path.join(BASE, "apps")          # OTA 安卓安装包与 manifest.json
+APP_MANIFEST_FILE = os.path.join(APPS_DIR, "manifest.json")
 try:
     # 按文件路径加载，不依赖 sys.path：脚本直接运行 / 被 import 两种方式都能用
     import importlib.util as _ilu
@@ -1554,6 +1558,31 @@ def get_holidays():
     return {"ok": True, "days": days}
 
 
+# ---------- 应用自更新（OTA）：apps/ 目录 + manifest.json，app_update.py 发布 ----------
+
+def load_app_manifest():
+    m = load_json(APP_MANIFEST_FILE, {})
+    return m if isinstance(m, dict) else {}
+
+
+def app_update_info(flavor, code):
+    """客户端 flavor 的版本号比服务器上低时返回更新信息 dict，否则 None。
+    客户端经 /api/check 捎带或 /api/app/check 手动检查，无认证也能查（无敏感信息）。"""
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return None
+    ent = load_app_manifest().get(str(flavor))
+    if not isinstance(ent, dict) or int(ent.get("code", 0) or 0) <= code:
+        return None
+    f = os.path.basename(str(ent.get("file", "")))
+    if not f or not os.path.isfile(os.path.join(APPS_DIR, f)):
+        return None
+    return {"code": int(ent.get("code", 0) or 0), "name": str(ent.get("name", "")),
+            "file": f, "md5": str(ent.get("md5", "")), "size": int(ent.get("size", 0) or 0),
+            "notes": str(ent.get("notes", ""))[:300]}
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         self._log_user = ""    # 审计日志：当前请求关联的账号
@@ -1892,9 +1921,26 @@ class Handler(SimpleHTTPRequestHandler):
             return self._send_json({"ok": True, "service": "clockdash", "ts": int(time.time())})
         if not rate_allowed(self.client_address[0] if self.client_address else ""):
             return self._send_json({"error": "请求过于频繁，请稍后再试"}, 429)
+        # OTA 安卓安装包下载：公开路由（APK 完整性由系统安装器的签名校验兜底）
+        if p.startswith("/apps/") and p.endswith(".apk"):
+            name = os.path.basename(p)   # 只取文件名，天然防目录穿越
+            if not re.fullmatch(r"[A-Za-z0-9._-]+\.apk", name):
+                return self._send_json({"error": "文件名不合法"}, 400)
+            fp = os.path.join(APPS_DIR, name)
+            if not os.path.isfile(fp):
+                return self.send_error(404)
+            with open(fp, "rb") as fh:
+                body = fh.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.android.package-archive")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if p in ("/api/todos", "/api/config", "/api/ping", "/api/weather",
                  "/api/holidays", "/api/check", "/api/users", "/api/devices",
-                 "/api/history", "/api/watchdog", "/api/backup"):
+                 "/api/history", "/api/watchdog", "/api/backup", "/api/app/check"):
             a = self._auth()
             if a and a.get("user"):
                 self._log_user = str(a["user"])[:32]
@@ -1976,6 +2022,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._send_json(cfg)
             if p == "/api/weather":
                 return self._send_json(get_weather(dev))
+            if p == "/api/app/check":
+                qs3 = parse_qs(urlparse(self.path).query)
+                return self._send_json({"ok": True,
+                                        "app": app_update_info((qs3.get("flavor") or [""])[0],
+                                                               (qs3.get("code") or ["0"])[0])})
             if p == "/api/holidays":
                 return self._send_json(get_holidays())
             if p == "/api/history":
@@ -1990,6 +2041,12 @@ class Handler(SimpleHTTPRequestHandler):
                        "todo_rev": get_todo_rev(dev),
                        "config_rev": int(cfg.get("rev", 0) or 0),
                        "server_time": int(time.time())}
+                # OTA：客户端在 check 请求上附 flavor/code 时，如有新版本捎带返回
+                qs2 = parse_qs(urlparse(self.path).query)
+                upd = app_update_info((qs2.get("flavor") or [""])[0],
+                                      (qs2.get("code") or ["0"])[0])
+                if upd:
+                    out["app"] = upd
                 # 服务器"主动推送"给平板的消息：借设备既有的 5 分钟轮询捎带回去，
                 # 设备即使刚刚失联过，一恢复上线就能收到（离线消息补发）。
                 notice = peek_device_notice(dev)

@@ -35,6 +35,10 @@ public final class Prefs {
     public static final String K_LAST_HEAL = "last_heal_ms";
     /** 最后一次弹过的服务器留言 id：同一留言只弹一次（服务器最多重发 3 次） */
     public static final String K_LAST_NOTICE = "last_notice_id";
+    /** OTA：已成功下载的更新包 versionCode / 文件路径 / 已通知过安装的版本号 */
+    public static final String K_APP_DL_CODE = "app_dl_code";
+    public static final String K_APP_FILE = "app_dl_file";
+    public static final String K_APP_NOTIFIED = "app_notified_code";
 
     private static final String NAME = "clockdash";
 

@@ -90,6 +90,16 @@
             android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
             android:text="断电重启后无需任何操作，几秒后自动回到时钟看板。" />
 
+        <TextView style="@style/SecTitle" android:text="软件更新" />
+        <Button
+            android:id="@+id/btnCheckUpdate"
+            android:layout_width="match_parent" android:layout_height="46dp"
+            android:textSize="15sp" android:text="检查更新（在线版可用）" />
+        <TextView
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="12sp" android:textColor="@color/dim" android:layout_marginTop="2dp"
+            android:text="有新版本时后台自动下载并通知安装，这里也可手动检查。安装过程中请保持充电，安装完看板会自动重启内容。" />
+
         <Button
             android:id="@+id/btnBack"
             android:layout_width="match_parent" android:layout_height="52dp"

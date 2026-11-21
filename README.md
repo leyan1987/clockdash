@@ -39,6 +39,7 @@
 - **夜间模式**：定时把屏幕亮度降到 6%，可选"只显示时钟"
 - **离线兜底**：断网时时钟/日历/夜间模式照常工作，数据用最后缓存
 - **在线看护**：服务器记录每台设备（含订阅账号的全部设备）最后通讯时间，超过阈值（默认 15 分钟）经企业微信/钉钉/飞书/自定义 Webhook 推送失联告警，恢复时再通知一次；网页后台可看在线状态、告警历史，也可给平板留言（下次轮询带回）。平板端无需改动、不额外耗电
+- **OTA 自更新（在线版）**：平板每 5 分钟的轮询顺带发现新版本，自动后台下载（MD5 校验，约 300KB）并通知栏提示"点此安装"；设置页也有"检查更新"手动入口。防篡改由 APK 签名兜底（系统安装器校验，不一致直接拒绝）。服务商一条命令发布新版本
 
 ## 在线版 vs 单机版
 
@@ -106,6 +107,8 @@ VPS / NAS / 电脑：server.py（Python 标准库，单文件）
 ├── server/
 │   ├── server.py           后台服务器（纯标准库，Python 3.7+）
 │   ├── backup.py           备份恢复工具（纯标准库）
+│   ├── app_update.py       安卓端 OTA 发布工具（纯标准库）
+│   ├── apps/               OTA 安卓安装包 + manifest.json（发布时生成，不入库）
 │   ├── web/index.html      网页后台（vanilla JS）
 │   ├── web/board.html      浏览器看板（PWA，可全屏）
 │   ├── clockdash.service   systemd 单元
@@ -195,6 +198,27 @@ python3 backup.py restore backups/clockdash-YYYYMMDD-HHMMSS-XXX.tar.gz \
 **网页后台**：管理员可一键备份、查看列表、点选恢复；恢复需两次确认（确认框 + 手动输入 `RESTORE`）。非管理员看不到该区块，调用备份 API 一律 403。
 
 **定时备份**：systemd timer 默认每天 03:17 备份一次（随机延迟），保留 30 份；`Persistent=true` 保证停机期间错过的备份开机后补做。
+
+## 安卓端 OTA 发布
+
+出新版本后，把两个 APK 上传到服务器任意目录，然后：
+
+```bash
+python3 app_update.py publish legacy ClockDash-legacy-44.apk --name 1.44 --notes "修复xxx"
+python3 app_update.py publish modern ClockDash-modern-44.apk --name 1.44 --notes "修复xxx"
+python3 app_update.py list          # 查看当前发布状态
+python3 app_update.py clear legacy  # 撤销某版本的更新提示
+```
+
+- 文件名以 `-<versionCode>.apk` 结尾时可省略 `--code`（推荐命名习惯）
+- APK 存入 `server/apps/`，manifest 记录版本号/MD5/说明；**发布后无需重启服务器**
+- 客户端在下一次 5 分钟轮询（`/api/check` 捎带）即收到新版本信息，自动后台下载
+  （MD5 校验防下载损坏）并通知"点此安装"；也可在平板设置页"检查更新"手动触发
+- 安装链路：legacy 走系统安装器 Intent；modern（Android 5.0+）走框架 PackageInstaller，
+  Android 8+ 首次需授予"安装未知应用"。防篡改最终由 APK 签名保证——
+  签名与已装应用不一致时系统拒绝安装，MD5 只负责检出下载损坏
+- 服务器端对应路由：`GET /api/app/check?flavor=&code=`（鉴权）与
+  `GET /apps/<文件>.apk`（公开下载，限流内）
 
 ## 待办数据格式（todos.json）
 

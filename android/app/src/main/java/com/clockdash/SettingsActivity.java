@@ -116,6 +116,13 @@ public class SettingsActivity extends Activity {
                 finish();
             }
         });
+        findViewById(R.id.btnCheckUpdate).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                save();
+                checkUpdate();
+            }
+        });
 
         try {
             android.content.pm.PackageInfo pi = getPackageManager()
@@ -314,5 +321,60 @@ public class SettingsActivity extends Activity {
 
     private void toast(String s) {
         Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    /** 手动检查 OTA 更新：无更新提示；已就绪直接询问安装；否则后台下载并通知 */
+    private void checkUpdate() {
+        if (Store.serverBase(this) == null) {
+            toast("单机版请到购买渠道获取新安装包覆盖安装");
+            return;
+        }
+        toast("正在检查更新…");
+        final SettingsActivity activity = this;
+        final Context app = getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final JSONObject upd = AppUpdate.checkNow(app);
+                String path = upd == null ? null
+                        : Prefs.get(app, Prefs.K_APP_FILE, "");
+                final boolean ready = upd != null && path.length() > 0
+                        && new java.io.File(path).isFile()
+                        && Prefs.getInt(app, Prefs.K_APP_DL_CODE, 0) == upd.optInt("code", -1);
+                if (upd != null && !ready) {
+                    // 顺手触发下载，完成后通知栏提示
+                    try {
+                        AppUpdate.onCheck(app, upd);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                activity.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (activity.isFinishing()) return;
+                        if (upd == null) {
+                            toast("已是最新版本 ✓");
+                        } else if (ready) {
+                            new AlertDialog.Builder(activity)
+                                    .setTitle("安装新版本 v" + upd.optString("name", ""))
+                                    .setMessage("安装包已下载完成，现在安装吗？"
+                                            + "安装期间看板会短暂中断，请保持充电。")
+                                    .setPositiveButton("立即安装", new android.content.DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(android.content.DialogInterface d, int w) {
+                                            String err = AppUpdate.install(activity);
+                                            if (err != null) toast(err);
+                                        }
+                                    })
+                                    .setNegativeButton("稍后", null)
+                                    .show();
+                        } else {
+                            toast("发现新版本 v" + upd.optString("name", "")
+                                    + "，正在后台下载，完成后会通知安装");
+                        }
+                    }
+                });
+            }
+        }, "clockdash-ota-check").start();
     }
 }
