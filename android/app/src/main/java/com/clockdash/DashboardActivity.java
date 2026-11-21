@@ -84,6 +84,8 @@ public class DashboardActivity extends Activity {
 
     private final TextView[] cellText = new TextView[42];
     private final View[] cellDot = new View[42];
+    private final View[] cellView = new View[42];     // 月历格（可点击，与网页看板一致）
+    private final long[] cellDay = new long[42];      // 每格对应的日期 00:00（buildCalendar 填充）
 
     private List<Todo> mTodos = new ArrayList<Todo>();
     private WeatherInfo mWx;
@@ -661,6 +663,14 @@ public class DashboardActivity extends Activity {
                 int idx = r * 7 + c;
                 cellText[idx] = tv;
                 cellDot[idx] = dot;
+                cellView[idx] = cell;
+                final int fidx = idx;
+                cell.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        showDayDialog(cellDay[fidx]);
+                    }
+                });
             }
             calGrid.addView(row);
         }
@@ -734,6 +744,11 @@ public class DashboardActivity extends Activity {
                 cellD = d < 1 ? prevLen + d : d - len;
             }
             String key = String.format(Locale.US, "%04d-%02d-%02d", cellY, cellM, cellD);
+            // 记录每格真实日期（含前后月补位格）：点击格子时据此弹出当日待办
+            Calendar cellCal = Calendar.getInstance();
+            cellCal.clear();
+            cellCal.set(cellY, cellM - 1, cellD);
+            cellDay[i] = cellCal.getTimeInMillis();
 
             String dayStr = String.valueOf(cellD);
             boolean offDay = inMonth && mOffDays.containsKey(key);
@@ -791,6 +806,79 @@ public class DashboardActivity extends Activity {
             }
             cellDot[i].setVisibility(hasTodo ? View.VISIBLE : View.GONE);
         }
+    }
+
+    /** 点击月历格：弹出当日待办明细（与网页看板的日期弹窗一致） */
+    private void showDayDialog(long dayMs) {
+        Calendar d = Calendar.getInstance();
+        d.setTimeInMillis(dayMs);
+        String lunar = Lunar.label(d.get(Calendar.YEAR),
+                d.get(Calendar.MONTH) + 1, d.get(Calendar.DAY_OF_MONTH));
+        String title = (d.get(Calendar.MONTH) + 1) + "月" + d.get(Calendar.DAY_OF_MONTH) + "日 "
+                + WD[d.get(Calendar.DAY_OF_WEEK) - 1]
+                + (lunar == null || lunar.length() == 0 ? "" : " · 农历" + lunar);
+
+        // 展开当日所有待办的发生时刻（含循环规则），按时间排序
+        ArrayList<long[]> rows = new ArrayList<long[]>();   // [发生时刻, 待办下标]
+        if (!mTodos.isEmpty()) {
+            for (int i = 0; i < mTodos.size(); i++) {
+                Todo t = mTodos.get(i);
+                ArrayList<Long> occs = Recur.expand(t, dayMs, dayMs + 86399999L);
+                for (int k = 0; k < occs.size(); k++) {
+                    rows.add(new long[]{occs.get(k).longValue(), i});
+                }
+            }
+        }
+        if (rows.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setMessage("这一天没有待办安排。")
+                    .setPositiveButton("知道了", null)
+                    .show();
+            return;
+        }
+        java.util.Collections.sort(rows, new java.util.Comparator<long[]>() {
+            @Override
+            public int compare(long[] a, long[] b) {
+                return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0);
+            }
+        });
+        String[] items = new String[rows.size()];
+        for (int i = 0; i < rows.size(); i++) {
+            long[] p = rows.get(i);
+            Todo t = mTodos.get((int) p[1]);
+            items[i] = HM_FMT.format(new Date(p[0])) + "  " + t.title
+                    + (t.repeat == null || "none".equals(t.repeat) ? "" : " · " + repeatLabel(t));
+        }
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(items, null)
+                .setPositiveButton("关闭", null)
+                .show();
+    }
+
+    /** 待办的重复规则中文名（与设置页/网页后台一致） */
+    private static String repeatLabel(Todo t) {
+        String r = t.repeat == null ? "none" : t.repeat;
+        String base;
+        if ("hourly".equals(r)) base = "每小时";
+        else if ("daily".equals(r)) base = "每天";
+        else if ("weekly".equals(r)) base = "每周";
+        else if ("monthly".equals(r)) base = "每月";
+        else if ("yearly".equals(r)) base = "每年";
+        else base = "不重复";
+        if ("none".equals(r)) return base;
+        StringBuilder sb = new StringBuilder(base);
+        if (t.interval > 1) sb.append("×").append(t.interval);
+        if ("weekly".equals(r) && t.weekdays != null && t.weekdays.length > 0) {
+            sb.append("(");
+            for (int i = 0; i < t.weekdays.length; i++) {
+                if (i > 0) sb.append(",");
+                sb.append("周").append(t.weekdays[i]);
+            }
+            sb.append(")");
+        }
+        return sb.toString();
     }
 
     private static void zero(Calendar c) {
