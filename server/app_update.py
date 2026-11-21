@@ -21,11 +21,82 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import sys
+import zipfile
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 APPS_DIR = os.path.join(BASE, "apps")
 MANIFEST = os.path.join(APPS_DIR, "manifest.json")
+
+
+def apk_min_sdk(path):
+    """解析 APK 内二进制 AndroidManifest.xml 的 uses-sdk@minSdkVersion。
+    纯 Python 解析 AXML 字符串池与 START_ELEMENT 属性；解析失败返回 None。
+    用于发布防呆：modern 包（minSdk>=21）绝不允许发布给 legacy（老平板）渠道。"""
+    try:
+        raw = zipfile.ZipFile(path).read("AndroidManifest.xml")
+    except Exception:
+        return None
+    try:
+        if struct.unpack_from("<H", raw, 0)[0] != 0x0003:   # 不是 RES_XML_TYPE
+            return None
+        off, n = 8, len(raw)
+        strings = None
+        min_sdk = None
+        while off + 8 <= n:
+            ctype, _hsize, size = struct.unpack_from("<HHI", raw, off)
+            if size <= 0:
+                break
+            if ctype == 0x0001 and strings is None:
+                # RES_STRING_POOL_TYPE 头 28 字节：type hsize size | scount styleCount flags stringsStart stylesStart
+                hsize = struct.unpack_from("<H", raw, off + 2)[0]
+                scount, _styles, sflags, sstart = struct.unpack_from("<IIII", raw, off + 8)
+                utf8 = bool(sflags & 0x100)
+                base = off + sstart
+                strs = []
+                for i in range(scount):
+                    so = struct.unpack_from("<I", raw, off + hsize + i * 4)[0]
+                    p = base + so
+                    if utf8:
+                        # u16字符数 与 u8字节数 都是 1-2 字节变长（高位续位）
+                        l = raw[p]
+                        p += 1
+                        if l & 0x80:
+                            l = ((l & 0x7F) << 8) | raw[p]
+                            p += 1
+                        l2 = raw[p]
+                        p += 1
+                        if l2 & 0x80:
+                            l2 = ((l2 & 0x7F) << 8) | raw[p]
+                            p += 1
+                        strs.append(raw[p:p + l2].decode("utf-8", "replace"))
+                    else:
+                        l = struct.unpack_from("<H", raw, p)[0]
+                        p += 2
+                        if l & 0x8000:
+                            l = ((l & 0x7FFF) << 16) | struct.unpack_from("<H", raw, p)[0]
+                            p += 2
+                        strs.append(raw[p:p + l * 2].decode("utf-16-le", "replace"))
+                strings = strs
+            elif ctype == 0x0102 and strings is not None:
+                # START_ELEMENT：节点头16字节后是 attrExt{ns,name,attrStart,attrSize,attrCount}
+                ename = struct.unpack_from("<I", raw, off + 20)[0]
+                attr_start, attr_size, attr_count = struct.unpack_from("<HHH", raw, off + 24)
+                elem = strings[ename] if ename < len(strings) else ""
+                if elem == "uses-sdk":
+                    abase = off + 16 + attr_start
+                    for i in range(attr_count):
+                        a = abase + i * attr_size
+                        name_idx = struct.unpack_from("<I", raw, a + 4)[0]
+                        dtype = raw[a + 15]
+                        aname = strings[name_idx] if name_idx < len(strings) else ""
+                        if aname == "minSdkVersion" and dtype == 0x10:  # INT
+                            min_sdk = struct.unpack_from("<I", raw, a + 16)[0]
+            off += size
+        return min_sdk
+    except Exception:
+        return None
 
 
 def md5_of(path):
@@ -58,6 +129,22 @@ def cmd_publish(a):
         sys.exit("找不到文件: %s" % src)
     if a.flavor not in ("legacy", "modern"):
         sys.exit("flavor 必须是 legacy 或 modern")
+    # 防呆一：文件名与 flavor 交叉（发布传反是最容易犯的错）
+    low = os.path.basename(src).lower()
+    if not a.force and (("modern" in low and a.flavor != "modern")
+                        or ("legacy" in low and a.flavor != "legacy")):
+        sys.exit("文件名含 %s 却要发布到 %s 渠道——疑似拿错安装包。\n"
+                 "确认无误可用 --force 强制发布。" % (low, a.flavor))
+    # 防呆二：解析 APK 声明的 minSdkVersion，堵住"老平板装上现代包"的最后一道缝
+    msdk = apk_min_sdk(src)
+    if msdk is not None:
+        if a.flavor == "legacy" and msdk >= 21:
+            if not a.force:
+                sys.exit("该 APK 声明 minSdkVersion=%d，无法在老平板（Android 4.x）上安装——\n"
+                         "这是 modern 包，请改用 legacy 安装包发布，或用 --force 强制。" % msdk)
+            print("[warn] 强制发布 minSdk=%d 的包到 legacy 渠道：老平板将安装失败！" % msdk)
+        if a.flavor == "modern" and msdk < 21:
+            print("[warn] 注意：该 APK 声明 minSdkVersion=%d（低于 modern 渠道预期 21）" % msdk)
     if a.code is None:
         stem = os.path.splitext(os.path.basename(src))[0]
         tail = stem.rsplit("-", 1)
@@ -118,6 +205,7 @@ def main():
     pp.add_argument("--code", type=int, default=None, help="versionCode（文件名含 -<数字>.apk 时可省）")
     pp.add_argument("--name", default=None, help="versionName，如 1.44")
     pp.add_argument("--notes", default=None, help="更新说明（显示给用户）")
+    pp.add_argument("--force", action="store_true", help="跳过 flavor 防呆校验（确认拿对包时才用）")
     pp.set_defaults(fn=cmd_publish)
     lp = sub.add_parser("list", help="查看已发布版本")
     lp.set_defaults(fn=cmd_list)
